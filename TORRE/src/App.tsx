@@ -401,13 +401,15 @@ export default function App() {
 
     // Draw Swinging Block
     if (currentState === 'PLAYING' && currentBlockRef.current) {
+      const swingingBlock = currentBlockRef.current;
       const speedMultiplier = 1 + Math.floor(scoreRef.current / 10) * 0.2;
-      currentBlockRef.current.angle += SWING_SPEED * speedMultiplier;
+      swingingBlock.angle += SWING_SPEED * speedMultiplier;
       
-      const swingX = Math.sin(currentBlockRef.current.angle) * SWING_AMPLITUDE;
+      const swingX = Math.sin(swingingBlock.angle) * SWING_AMPLITUDE;
       const x = canvas.width / 2 + swingX;
       const y = 80; // Relative to screen top
 
+      let autoDroppedThisFrame = false;
       if (autoDropEnabledRef.current && autoDropTargetXRef.current !== null) {
         const targetX = autoDropTargetXRef.current;
         const prevX = prevSwingXRef.current;
@@ -418,10 +420,15 @@ export default function App() {
         if ((crossedTarget || nearTarget) && now - lastAutoDropTimeRef.current > AUTO_DROP_COOLDOWN_MS) {
           lastAutoDropTimeRef.current = now;
           dropBlock();
+          autoDroppedThisFrame = true;
         }
         prevSwingXRef.current = x;
       } else {
         prevSwingXRef.current = null;
+      }
+
+      if (autoDroppedThisFrame || !currentBlockRef.current) {
+        return;
       }
 
       // Guide line for tutorial
@@ -454,7 +461,7 @@ export default function App() {
       // Draw Block
       ctx.save();
       ctx.translate(x, y);
-      ctx.fillStyle = currentBlockRef.current.color;
+      ctx.fillStyle = swingingBlock.color;
       ctx.shadowBlur = 20;
       ctx.shadowColor = 'rgba(0,0,0,0.15)';
       const r = 8;

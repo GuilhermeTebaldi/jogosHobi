@@ -20,6 +20,32 @@ interface HistoryItem {
 const REVEAL_DURATIONS: Record<Difficulty, number> = {
   impossible: 80,
 };
+const HISTORY_STORAGE_KEY = 'gamehub_memoria_history_v1';
+const HISTORY_LIMIT = 50;
+
+const loadStoredHistory = (): HistoryItem[] => {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((item): item is HistoryItem => (
+        item &&
+        typeof item.target === 'string' &&
+        typeof item.user === 'string' &&
+        typeof item.isCorrect === 'boolean' &&
+        typeof item.timestamp === 'number'
+      ))
+      .slice(0, HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+};
 
 export default function App() {
   const [gameState, setGameState] = useState<GameState>('idle');
@@ -28,7 +54,7 @@ export default function App() {
   const [userInput, setUserInput] = useState<string>('');
   const [countdown, setCountdown] = useState<number>(3);
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>(() => loadStoredHistory());
   const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -56,7 +82,7 @@ export default function App() {
       user: userInput,
       isCorrect: correct,
       timestamp: Date.now()
-    }, ...prev]);
+    }, ...prev].slice(0, HISTORY_LIMIT));
   };
 
   useEffect(() => {
@@ -88,6 +114,16 @@ export default function App() {
       inputRef.current.focus();
     }
   }, [gameState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    try {
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } catch {
+      // Ignore storage errors (private mode/full storage).
+    }
+  }, [history]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, '').slice(0, 4);
