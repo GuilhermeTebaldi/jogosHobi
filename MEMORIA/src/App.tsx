@@ -97,17 +97,17 @@ export default function App() {
   return (
     <div className="h-[100dvh] w-screen bg-[#f0f4f8] flex flex-col font-sans text-slate-800 overflow-hidden fixed inset-0 touch-none select-none">
       {/* Top Bar */}
-      <header className="h-12 bg-white/80 backdrop-blur-md border-b border-slate-200 z-50 flex items-center justify-between px-6 flex-shrink-0">
+      <header className="h-11 sm:h-12 bg-white/80 backdrop-blur-md border-b border-slate-200 z-50 flex items-center justify-between px-4 sm:px-6 flex-shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
-          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Flash Memory</span>
+          <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Flash Memory</span>
         </div>
         <button 
           onClick={() => setShowHistory(true)}
           className="flex items-center gap-2 text-slate-600 hover:text-blue-600 transition-colors"
         >
           <History size={16} />
-          <span className="text-xs font-bold uppercase tracking-wider">Histórico</span>
+          <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider">Histórico</span>
         </button>
       </header>
 
@@ -117,11 +117,11 @@ export default function App() {
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-200 rounded-full blur-3xl" />
       </div>
 
-      <main className="flex-1 flex flex-col items-center justify-center p-4 relative overflow-hidden sm:pt-16">
-        <div className="w-full max-w-md relative z-10 flex-shrink-0 sm:mt-12">
-          <div className="relative h-48 sm:h-64 flex items-center justify-center mb-6 sm:mb-12 flex-shrink-0">
+      <main className="flex-1 flex flex-col items-center justify-start sm:justify-center p-3 sm:p-4 pt-2 relative overflow-hidden sm:pt-16">
+        <div className="w-full max-w-md relative z-10 flex flex-col flex-1 min-h-0 sm:flex-shrink-0 sm:mt-12">
+          <div className="relative h-40 sm:h-64 flex items-center justify-center mb-3 sm:mb-12 flex-shrink-0">
             {/* Hands and Paper Container */}
-          <div className="relative w-full max-w-[300px] h-full flex items-center justify-center">
+          <div className="relative w-full max-w-[260px] sm:max-w-[300px] h-full flex items-center justify-center">
             
             {/* Left Hand */}
             <motion.div 
@@ -133,18 +133,18 @@ export default function App() {
               }}
               transition={{ type: 'spring', stiffness: 300, damping: 25 }}
             >
-              <div className="w-16 h-32 bg-[#e0ac69] rounded-r-3xl shadow-lg relative border-r-4 border-black/10">
+              <div className="w-12 h-24 sm:w-16 sm:h-32 bg-[#e0ac69] rounded-r-3xl shadow-lg relative border-r-4 border-black/10">
                 {/* Fingers detail */}
-                <div className="absolute top-4 right-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
-                <div className="absolute top-12 right-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
-                <div className="absolute top-20 right-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
-                <div className="absolute top-28 right-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
+                <div className="absolute top-3 sm:top-4 right-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
+                <div className="absolute top-9 sm:top-12 right-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
+                <div className="absolute top-[3.75rem] sm:top-20 right-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
+                <div className="absolute top-[5.25rem] sm:top-28 right-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-r-2 border-black/5" />
               </div>
             </motion.div>
 
             {/* Paper */}
             <motion.div 
-              className="w-48 h-32 bg-white shadow-xl border-2 border-slate-200 rounded-sm flex items-center justify-center overflow-hidden relative z-10"
+              className="w-40 h-[6.5rem] sm:w-48 sm:h-32 bg-white shadow-xl border-2 border-slate-200 rounded-sm flex items-center justify-center overflow-hidden relative z-10"
               animate={{ 
                 scaleX: (gameState === 'reveal' || gameState === 'result') ? 1 : 0.02,
                 opacity: (gameState === 'reveal' || gameState === 'result') ? 1 : 0.9
@@ -159,7 +159,7 @@ export default function App() {
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
-                    className="text-5xl font-mono font-bold tracking-widest text-slate-900"
+                    className="text-4xl sm:text-5xl font-mono font-bold tracking-widest text-slate-900"
                   >
                     {targetNumber}
                   </motion.span>
@@ -177,12 +177,12 @@ export default function App() {
               }}
               transition={{ type: 'spring', stiffness: 300, damping: 25 }}
             >
-              <div className="w-16 h-32 bg-[#e0ac69] rounded-l-3xl shadow-lg relative border-l-4 border-black/10">
+              <div className="w-12 h-24 sm:w-16 sm:h-32 bg-[#e0ac69] rounded-l-3xl shadow-lg relative border-l-4 border-black/10">
                 {/* Fingers detail */}
-                <div className="absolute top-4 left-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
-                <div className="absolute top-12 left-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
-                <div className="absolute top-20 left-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
-                <div className="absolute top-28 left-[-4px] w-6 h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
+                <div className="absolute top-3 sm:top-4 left-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
+                <div className="absolute top-9 sm:top-12 left-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
+                <div className="absolute top-[3.75rem] sm:top-20 left-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
+                <div className="absolute top-[5.25rem] sm:top-28 left-[-4px] w-5 h-5 sm:w-6 sm:h-6 bg-[#e0ac69] rounded-full border-l-2 border-black/5" />
               </div>
             </motion.div>
           </div>
@@ -197,7 +197,7 @@ export default function App() {
                 key={countdown}
                 className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none"
               >
-                <span className="text-8xl font-black text-blue-600 drop-shadow-2xl">
+                <span className="text-7xl sm:text-8xl font-black text-blue-600 drop-shadow-2xl">
                   {countdown}
                 </span>
               </motion.div>
@@ -206,7 +206,7 @@ export default function App() {
         </div>
 
           {/* Game Controls */}
-          <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl border border-slate-100 h-[380px] sm:h-[420px] flex flex-col justify-center overflow-hidden flex-shrink-0">
+          <div className="bg-white p-4 sm:p-8 rounded-3xl shadow-2xl border border-slate-100 h-[50dvh] min-h-[250px] max-h-[340px] sm:h-[420px] flex flex-col justify-center overflow-hidden flex-shrink-0">
             <AnimatePresence mode="wait">
             {gameState === 'idle' && (
               <motion.div 
@@ -218,7 +218,7 @@ export default function App() {
               >
                 <button 
                   onClick={startGame}
-                  className="group relative flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-10 py-4 rounded-2xl font-bold text-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-blue-200"
+                  className="group relative flex items-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-8 sm:px-10 py-3 sm:py-4 rounded-2xl font-bold text-base sm:text-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-blue-200"
                 >
                   <Play className="fill-current" />
                   INICIAR JOGO
@@ -267,7 +267,7 @@ export default function App() {
                     pattern="[0-9]*"
                     value={userInput}
                     onChange={handleInputChange}
-                    className="w-full text-center text-5xl font-mono font-bold tracking-[0.5em] py-4 border-b-4 border-slate-100 focus:border-blue-500 outline-none transition-colors"
+                    className="w-full text-center text-4xl sm:text-5xl font-mono font-bold tracking-[0.35em] sm:tracking-[0.5em] py-3 sm:py-4 border-b-4 border-slate-100 focus:border-blue-500 outline-none transition-colors"
                     placeholder="----"
                     maxLength={4}
                     autoFocus
@@ -330,7 +330,7 @@ export default function App() {
           </AnimatePresence>
         </div>
 
-          <footer className="mt-6 sm:mt-12 text-center">
+          <footer className="mt-4 sm:mt-12 text-center hidden sm:block">
             <p className="text-slate-400 text-xs font-medium">
               Teste sua memória visual e reflexos.
             </p>

@@ -32,6 +32,9 @@ const COLORS = [
   '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', 
   '#F7DC6F', '#BB8FCE', '#82E0AA', '#F1948A', '#85C1E9'
 ];
+const TAP_WINDOW_MS = 380;
+const AUTO_DROP_COOLDOWN_MS = 220;
+const AUTO_TARGET_TOLERANCE = 10;
 
 // --- Utility Functions ---
 
@@ -57,6 +60,15 @@ export default function App() {
 
   const [lastPrecision, setLastPrecision] = useState<'PERFECT' | 'GOOD' | 'BAD' | null>(null);
   const [showTutorial, setShowTutorial] = useState(true);
+  const [autoDropEnabled, setAutoDropEnabled] = useState(false);
+  const [autoDropTargetX, setAutoDropTargetX] = useState<number | null>(null);
+  const autoDropEnabledRef = useRef(false);
+  const autoDropTargetXRef = useRef<number | null>(null);
+  const tapTimestampsRef = useRef<number[]>([]);
+  const lastAutoDropTimeRef = useRef(0);
+  const prevSwingXRef = useRef<number | null>(null);
+  useEffect(() => { autoDropEnabledRef.current = autoDropEnabled; }, [autoDropEnabled]);
+  useEffect(() => { autoDropTargetXRef.current = autoDropTargetX; }, [autoDropTargetX]);
 
   // Game Engine Refs
   const blocksRef = useRef<Block[]>([]);
@@ -89,6 +101,11 @@ export default function App() {
     setScore(0);
     setStability(100);
     setLastPrecision(null);
+    setAutoDropEnabled(false);
+    setAutoDropTargetX(null);
+    tapTimestampsRef.current = [];
+    lastAutoDropTimeRef.current = 0;
+    prevSwingXRef.current = null;
     shakeRef.current = 0;
     setGameState('PLAYING');
     setShowTutorial(true);
@@ -131,6 +148,38 @@ export default function App() {
       if (gameStateRef.current === 'PLAYING') spawnBlock();
     }, 800);
   }, [spawnBlock]);
+
+  const handleCanvasTap = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    const now = Date.now();
+    tapTimestampsRef.current = tapTimestampsRef.current.filter((ts) => now - ts <= TAP_WINDOW_MS);
+    tapTimestampsRef.current.push(now);
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (autoDropEnabledRef.current) {
+      if (tapTimestampsRef.current.length >= 2) {
+        setAutoDropEnabled(false);
+        setAutoDropTargetX(null);
+        tapTimestampsRef.current = [];
+        prevSwingXRef.current = null;
+      }
+      return;
+    }
+
+    if (tapTimestampsRef.current.length >= 3) {
+      const rect = canvas.getBoundingClientRect();
+      const targetX = Math.min(Math.max(event.clientX - rect.left, 0), rect.width);
+      setAutoDropEnabled(true);
+      setAutoDropTargetX(targetX);
+      tapTimestampsRef.current = [];
+      lastAutoDropTimeRef.current = 0;
+      prevSwingXRef.current = null;
+      return;
+    }
+
+    dropBlock();
+  }, [dropBlock]);
 
   const calculateStability = useCallback(() => {
     if (blocksRef.current.length === 0) return 100;
@@ -279,16 +328,6 @@ export default function App() {
       // Draw Block
       ctx.save();
       
-      let cumulativeTilt = 0;
-      if (currentState !== 'FALLING') {
-        const centerX = canvas.width / 2;
-        for (let i = 0; i <= index; i++) {
-          const b = blocksRef.current[i];
-          const offset = (b.x + b.width / 2) - centerX;
-          cumulativeTilt += offset * 0.0001 * (i + 1);
-        }
-      }
-
       ctx.translate(block.x + block.width / 2, block.y + block.height / 2);
       
       if (currentState === 'FALLING' || currentState === 'GAME_OVER') {
@@ -310,9 +349,8 @@ export default function App() {
         
         ctx.rotate(block.rotation);
       } else {
-         // Only wobble during active play
-         const wobble = currentState === 'PLAYING' ? Math.sin(Date.now() * 0.005) * (1 - stabilityRef.current / 100) * 0.05 : 0;
-         ctx.rotate(cumulativeTilt + wobble);
+         // Keep settled blocks perfectly aligned while building.
+         ctx.rotate(0);
       }
 
       ctx.fillStyle = block.color;
@@ -370,6 +408,22 @@ export default function App() {
       const x = canvas.width / 2 + swingX;
       const y = 80; // Relative to screen top
 
+      if (autoDropEnabledRef.current && autoDropTargetXRef.current !== null) {
+        const targetX = autoDropTargetXRef.current;
+        const prevX = prevSwingXRef.current;
+        const crossedTarget = prevX !== null && (prevX - targetX) * (x - targetX) <= 0;
+        const nearTarget = Math.abs(x - targetX) <= AUTO_TARGET_TOLERANCE;
+        const now = Date.now();
+
+        if ((crossedTarget || nearTarget) && now - lastAutoDropTimeRef.current > AUTO_DROP_COOLDOWN_MS) {
+          lastAutoDropTimeRef.current = now;
+          dropBlock();
+        }
+        prevSwingXRef.current = x;
+      } else {
+        prevSwingXRef.current = null;
+      }
+
       // Guide line for tutorial
       if (showTutorial) {
         ctx.setLineDash([5, 5]);
@@ -409,7 +463,7 @@ export default function App() {
       ctx.fill();
       ctx.restore();
     }
-  }, [calculateStability]);
+  }, [calculateStability, dropBlock, showTutorial]);
 
   const updateRef = useRef(update);
   useEffect(() => {
@@ -419,13 +473,17 @@ export default function App() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const viewport = window.visualViewport;
 
     const handleResize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      canvas.width = Math.floor(viewportWidth);
+      canvas.height = Math.floor(viewportHeight);
     };
 
     window.addEventListener('resize', handleResize);
+    viewport?.addEventListener('resize', handleResize);
     handleResize();
 
     let frameId: number;
@@ -437,6 +495,7 @@ export default function App() {
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      viewport?.removeEventListener('resize', handleResize);
       cancelAnimationFrame(frameId);
     };
   }, []);
@@ -444,27 +503,27 @@ export default function App() {
   // --- Render ---
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-sky-50 font-sans select-none touch-none">
+    <div className="relative w-full h-[100dvh] overflow-hidden bg-sky-50 font-sans select-none touch-none">
       <canvas
         ref={canvasRef}
-        onClick={dropBlock}
+        onPointerDown={handleCanvasTap}
         className="block w-full h-full cursor-pointer"
       />
 
       {/* HUD */}
-      <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-start pointer-events-none">
+      <div className="absolute top-0 left-0 w-full p-4 sm:p-6 flex justify-between items-start pointer-events-none">
         <div className="flex flex-col gap-1">
           <div className="text-slate-500 text-xs font-bold uppercase tracking-widest">Blocos</div>
-          <div className="text-4xl font-black text-slate-800 tabular-nums">{score}</div>
+          <div className="text-3xl sm:text-4xl font-black text-slate-800 tabular-nums">{score}</div>
         </div>
 
         <div className="flex flex-col items-end gap-2">
-          <div className="bg-white/80 backdrop-blur-md px-4 py-2 rounded-2xl shadow-sm border border-white/20 flex items-center gap-2">
+          <div className="bg-white/80 backdrop-blur-md px-3 py-1.5 sm:px-4 sm:py-2 rounded-2xl shadow-sm border border-white/20 flex items-center gap-2">
             <Trophy className="w-4 h-4 text-amber-500" />
             <span className="text-sm font-bold text-slate-700">{highScore}</span>
           </div>
           
-          <div className="w-32 h-2 bg-slate-200 rounded-full overflow-hidden">
+          <div className="w-24 sm:w-32 h-2 bg-slate-200 rounded-full overflow-hidden">
             <motion.div 
               className={`h-full ${stability > 60 ? 'bg-emerald-500' : stability > 30 ? 'bg-amber-500' : 'bg-rose-500'}`}
               initial={{ width: '100%' }}
@@ -472,6 +531,11 @@ export default function App() {
             />
           </div>
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Estabilidade</div>
+          {autoDropEnabled && (
+            <div className="px-2.5 py-1 rounded-full bg-indigo-500/15 border border-indigo-400/30 text-[10px] font-black uppercase tracking-wider text-indigo-700">
+              Auto ligado
+            </div>
+          )}
         </div>
       </div>
 
@@ -501,7 +565,7 @@ export default function App() {
           <motion.h1 
             initial={{ y: -20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            className="text-6xl font-black text-slate-800 mb-2 tracking-tighter"
+            className="text-4xl sm:text-6xl font-black text-slate-800 mb-2 tracking-tighter"
           >
             EQUILÍBRIO<br/>DE TORRE
           </motion.h1>
@@ -510,13 +574,16 @@ export default function App() {
           </p>
           <button
             onClick={initGame}
-            className="group relative px-8 py-4 bg-slate-800 text-white rounded-2xl font-bold text-xl shadow-xl hover:bg-slate-700 transition-all active:scale-95 pointer-events-auto"
+            className="group relative px-7 py-3 sm:px-8 sm:py-4 bg-slate-800 text-white rounded-2xl font-bold text-lg sm:text-xl shadow-xl hover:bg-slate-700 transition-all active:scale-95 pointer-events-auto"
           >
             <div className="flex items-center gap-2">
               <Play className="w-6 h-6 fill-current" />
               INICIAR JOGO
             </div>
           </button>
+          <p className="text-[11px] text-slate-500 mt-4 uppercase tracking-widest">
+            3 toques: auto no ponto | 2 toques: desativar auto
+          </p>
         </div>
       )}
 
@@ -525,13 +592,13 @@ export default function App() {
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white/10 p-12 rounded-[3rem] border border-white/10 shadow-2xl max-w-sm w-full"
+            className="bg-white/10 p-8 sm:p-12 rounded-[2.2rem] sm:rounded-[3rem] border border-white/10 shadow-2xl max-w-sm w-full"
           >
             <div className="w-20 h-20 bg-rose-500 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-rose-500/40">
               <AlertTriangle className="w-10 h-10 text-white" />
             </div>
             
-            <h2 className="text-4xl font-black mb-1 tracking-tighter uppercase">A Torre Caiu!</h2>
+            <h2 className="text-3xl sm:text-4xl font-black mb-1 tracking-tighter uppercase">A Torre Caiu!</h2>
             <p className="text-white/50 text-sm font-bold uppercase tracking-widest mb-8">Fim de Jogo</p>
             
             <div className="grid grid-cols-2 gap-4 mb-10">
@@ -596,7 +663,7 @@ export default function App() {
         <motion.div 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="absolute bottom-12 left-1/2 -translate-x-1/2 text-slate-400 font-bold text-sm uppercase tracking-widest animate-pulse"
+          className="absolute bottom-12 left-1/2 -translate-x-1/2 text-slate-400 font-bold text-xs sm:text-sm uppercase tracking-widest animate-pulse"
         >
           Toque para Soltar
         </motion.div>

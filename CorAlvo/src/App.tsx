@@ -33,7 +33,9 @@ export default function App() {
 
   useEffect(() => {
     const updateSize = () => {
-      const size = Math.min(window.innerWidth - 64, 360);
+      const widthSize = window.innerWidth - 48;
+      const heightSize = window.innerHeight - 290;
+      const size = Math.max(190, Math.min(widthSize, heightSize, 360));
       setWheelSize(size);
     };
     updateSize();
@@ -66,7 +68,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-black selection:text-white overflow-hidden flex flex-col">
+    <div className="h-[100dvh] bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-black selection:text-white overflow-hidden flex flex-col">
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-3 flex justify-between items-center shrink-0">
         <div className="flex items-center gap-2">
@@ -84,7 +86,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col items-center justify-center p-4 gap-4 relative">
+      <main className="flex-1 flex flex-col items-center justify-center p-3 sm:p-4 gap-3 sm:gap-4 relative">
         
         {/* Top Info / Result Area */}
         <div className="w-full max-w-md flex flex-col items-center gap-2 z-30">
@@ -117,14 +119,14 @@ export default function App() {
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           key={rgbToCss(state.target)}
-          className="w-20 h-20 rounded-full shadow-inner border-4 border-white shrink-0 relative"
+          className="w-16 h-16 sm:w-20 sm:h-20 rounded-full shadow-inner border-4 border-white shrink-0 relative"
           style={{ backgroundColor: rgbToCss(state.target) }}
         >
           <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent pointer-events-none" />
         </motion.div>
 
         {/* Color Wheel */}
-        <div className="relative flex-1 flex items-center justify-center w-full max-h-[400px]">
+        <div className="relative flex-1 flex items-center justify-center w-full max-h-[68dvh]">
           <ColorWheel 
             onSelect={handleColorSelect} 
             size={wheelSize} 
@@ -203,7 +205,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Info Tooltip */}
-      <div className="fixed bottom-6 right-6 group">
+      <div className="fixed bottom-6 right-6 group hidden sm:block">
         <div className="absolute bottom-full right-0 mb-4 w-64 p-4 bg-white rounded-2xl shadow-xl border border-gray-100 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none text-xs leading-relaxed text-gray-500">
           <p className="font-bold text-black mb-1">Como funciona a distância?</p>
           Utilizamos o algoritmo <strong className="text-black">CIELAB Delta E 76</strong>. Ele calcula a diferença entre cores de forma similar à percepção humana. Quanto menor o número, mais parecidas as cores são.
