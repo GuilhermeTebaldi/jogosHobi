@@ -2,7 +2,7 @@ import { useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { TowerControl as Tower, Brain, Target, ChevronRight, ChevronLeft, User } from "lucide-react";
 import TorreGame from "../TORRE/src/App.tsx";
-import MemoriaGame from "../MEMORIA/src/App.tsx";
+import ReflexoGame from "../4-5-6REFLEXO/src/App.tsx";
 import CorAlvoGame from "../CorAlvo/src/App.tsx";
 import ImpostorGame from "../IMPOSTOR/src/App.tsx";
 
@@ -39,12 +39,12 @@ const games: Game[] = [
   },
   {
     id: "memoria",
-    title: "MEMÓRIA",
-    description: "Treine seu cérebro encontrando os pares correspondentes. Quão rápida é a sua mente?",
+    title: "4-5-6REFLEXO",
+    description: "Novo desafio de reflexo visual: memorize números de 4, 5 ou 6 dígitos em milissegundos.",
     image: "https://i.pinimg.com/1200x/d9/35/c8/d935c8606522951393dcaad81dcaea75.jpg",
     color: "from-blue-600/80 to-black",
     icon: <Brain size={24} />,
-    component: MemoriaGame,
+    component: ReflexoGame,
   },
   {
     id: "torre",
