@@ -1,0 +1,5 @@
+{
+  "name": "Chroma Match",
+  "description": "A precision color perception game. Match the target color on a chromatic wheel and test your visual accuracy.",
+  "requestFramePermissions": []
+}

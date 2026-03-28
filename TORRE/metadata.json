@@ -1,0 +1,5 @@
+{
+  "name": "Equilíbrio de Torre",
+  "description": "Um jogo de empilhamento baseado em física onde você solta blocos balançando para construir a torre mais alta possível enquanto mantém o equilíbrio.",
+  "requestFramePermissions": []
+}

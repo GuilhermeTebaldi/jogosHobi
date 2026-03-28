@@ -1,0 +1,5 @@
+{
+  "name": "Game Hub - Escolha seu Jogo",
+  "description": "Uma tela de seleção para os jogos Torre, Memória e Coralvo.",
+  "requestFramePermissions": []
+}
