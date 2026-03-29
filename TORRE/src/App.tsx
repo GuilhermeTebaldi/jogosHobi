@@ -40,8 +40,14 @@ interface AutoTracePoint {
   frameBaselineMs?: number;
   frameDriftMs?: number;
   triggerTimestamp?: number;
+  triggerPerfMs?: number;
+  triggerFrame?: number;
   releaseTimestamp?: number;
+  releasePerfMs?: number;
+  releaseFrame?: number;
   commandLagMs?: number;
+  commandLagPerfMs?: number;
+  triggerReleaseFrameGap?: number;
   flightLagMs?: number;
   triggerMode?: 'crossed' | 'near' | 'manual';
 }
@@ -68,8 +74,14 @@ interface PendingAutoTelemetry {
   frameBaselineMs: number;
   frameDriftMs: number;
   triggerTimestamp: number;
+  triggerPerfMs: number;
+  triggerFrame: number;
   releaseTimestamp?: number;
+  releasePerfMs?: number;
+  releaseFrame?: number;
   commandLagMs?: number;
+  commandLagPerfMs?: number;
+  triggerReleaseFrameGap?: number;
   flightLagMs?: number;
   triggerMode: 'crossed' | 'near' | 'manual';
 }
@@ -241,6 +253,7 @@ export default function App() {
   const frameDeltaMsRef = useRef(16.7);
   const frameBaselineMsRef = useRef(16.7);
   const frameDriftMsRef = useRef(0);
+  const frameTickRef = useRef(0);
   useEffect(() => { autoDropEnabledRef.current = autoDropEnabled; }, [autoDropEnabled]);
   useEffect(() => { autoDropTargetXRef.current = autoDropTargetX; }, [autoDropTargetX]);
   useEffect(() => { autoTraceRef.current = autoTrace; }, [autoTrace]);
@@ -397,7 +410,11 @@ export default function App() {
       avgReadToRelease: 0,
       avgReleaseToLanding: 0,
       avgCommandLagMs: 0,
+      avgCommandLagPerfMs: 0,
       avgFlightLagMs: 0,
+      avgTriggerReleaseFrameGap: 0,
+      releaseSameFrameRate: 0,
+      releaseDistinctRate: 0,
       firstDeviationStage: 'indefinido' as 'leitura-soltar' | 'soltar-assentar' | 'misto' | 'indefinido',
       ljungBoxQ: 0,
       ljungBoxP: 1,
@@ -430,8 +447,14 @@ export default function App() {
     const commandLagSeries = traceForView
       .map((point) => point.commandLagMs)
       .filter((value): value is number => typeof value === 'number');
+    const commandLagPerfSeries = traceForView
+      .map((point) => point.commandLagPerfMs)
+      .filter((value): value is number => typeof value === 'number');
     const flightLagSeries = traceForView
       .map((point) => point.flightLagMs)
+      .filter((value): value is number => typeof value === 'number');
+    const triggerReleaseFrameGapSeries = traceForView
+      .map((point) => point.triggerReleaseFrameGap)
       .filter((value): value is number => typeof value === 'number');
 
     const mean = (values: number[]) => (
@@ -624,7 +647,20 @@ export default function App() {
     const avgReadToRelease = meanAbs(stageReadToReleaseSeries);
     const avgReleaseToLanding = meanAbs(stageReleaseToLandingSeries);
     const avgCommandLagMs = mean(commandLagSeries);
+    const avgCommandLagPerfMs = mean(commandLagPerfSeries);
     const avgFlightLagMs = mean(flightLagSeries);
+    const avgTriggerReleaseFrameGap = mean(triggerReleaseFrameGapSeries);
+    const sameFrameReleases = triggerReleaseFrameGapSeries.filter((value) => value === 0).length;
+    const releaseSameFrameRate = triggerReleaseFrameGapSeries.length > 0
+      ? sameFrameReleases / triggerReleaseFrameGapSeries.length
+      : 0;
+    const distinctCount = traceForView.reduce((count, point, index) => {
+      const stageShift = Math.abs(stageReadToReleaseSeries[index]);
+      const perfLag = typeof point.commandLagPerfMs === 'number' ? Math.abs(point.commandLagPerfMs) : 0;
+      const frameGap = typeof point.triggerReleaseFrameGap === 'number' ? Math.abs(point.triggerReleaseFrameGap) : 0;
+      return stageShift > 0.05 || perfLag > 0.2 || frameGap > 0 ? count + 1 : count;
+    }, 0);
+    const releaseDistinctRate = traceForView.length > 0 ? distinctCount / traceForView.length : 0;
     const stageDelta = Math.abs(avgReadToRelease - avgReleaseToLanding);
     const maxStage = Math.max(avgReadToRelease, avgReleaseToLanding, 1e-6);
     const firstDeviationStage: 'leitura-soltar' | 'soltar-assentar' | 'misto' = stageDelta / maxStage < 0.14
@@ -769,7 +805,11 @@ export default function App() {
       avgReadToRelease,
       avgReleaseToLanding,
       avgCommandLagMs,
+      avgCommandLagPerfMs,
       avgFlightLagMs,
+      avgTriggerReleaseFrameGap,
+      releaseSameFrameRate,
+      releaseDistinctRate,
       firstDeviationStage,
       ljungBoxQ,
       ljungBoxP,
@@ -886,7 +926,11 @@ export default function App() {
         avgReadToReleasePx: forensic.avgReadToRelease,
         avgReleaseToLandingPx: forensic.avgReleaseToLanding,
         avgCommandLagMs: forensic.avgCommandLagMs,
+        avgCommandLagPerfMs: forensic.avgCommandLagPerfMs,
         avgFlightLagMs: forensic.avgFlightLagMs,
+        avgTriggerReleaseFrameGap: forensic.avgTriggerReleaseFrameGap,
+        releaseSameFrameRate: forensic.releaseSameFrameRate,
+        releaseDistinctRate: forensic.releaseDistinctRate,
         firstDeviationStage: forensic.firstDeviationStage,
         forensicOrigin: forensic.origin,
         heuristicScore: forensic.originConfidence,
@@ -928,7 +972,7 @@ export default function App() {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.avgCommandLagMs, forensic.avgFlightLagMs, forensic.avgReadToRelease, forensic.avgReleaseToLanding, forensic.corrFrame, forensic.corrLanding, forensic.corrRelease, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.firstDeviationStage, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.avgCommandLagMs, forensic.avgCommandLagPerfMs, forensic.avgFlightLagMs, forensic.avgReadToRelease, forensic.avgReleaseToLanding, forensic.avgTriggerReleaseFrameGap, forensic.corrFrame, forensic.corrLanding, forensic.corrRelease, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.firstDeviationStage, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.releaseDistinctRate, forensic.releaseSameFrameRate, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -957,7 +1001,11 @@ export default function App() {
         avgReadToReleasePx: forensic.avgReadToRelease,
         avgReleaseToLandingPx: forensic.avgReleaseToLanding,
         avgCommandLagMs: forensic.avgCommandLagMs,
+        avgCommandLagPerfMs: forensic.avgCommandLagPerfMs,
         avgFlightLagMs: forensic.avgFlightLagMs,
+        avgTriggerReleaseFrameGap: forensic.avgTriggerReleaseFrameGap,
+        releaseSameFrameRate: forensic.releaseSameFrameRate,
+        releaseDistinctRate: forensic.releaseDistinctRate,
         firstDeviationStage: forensic.firstDeviationStage,
         forensicOrigin: forensic.origin,
         heuristicScore: forensic.originConfidence,
@@ -1003,7 +1051,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.avgCommandLagMs, forensic.avgFlightLagMs, forensic.avgReadToRelease, forensic.avgReleaseToLanding, forensic.corrFrame, forensic.corrLanding, forensic.corrRelease, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.firstDeviationStage, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.avgCommandLagMs, forensic.avgCommandLagPerfMs, forensic.avgFlightLagMs, forensic.avgReadToRelease, forensic.avgReleaseToLanding, forensic.avgTriggerReleaseFrameGap, forensic.corrFrame, forensic.corrLanding, forensic.corrRelease, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.firstDeviationStage, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.releaseDistinctRate, forensic.releaseSameFrameRate, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -1259,6 +1307,10 @@ export default function App() {
     ctx.fillText(`Troca de lado/regime: ${(forensic.flipRate * 100).toFixed(0)}% / ${forensic.phaseSwitches}`, summaryArea.x + 1160, summaryArea.y + 254);
     ctx.fillText(`Sessoes salvas: ${autoTraceSessions.length} | pontos totais: ${autoTrace.length + autoTraceSessions.reduce((sum, session) => sum + session.points.length, 0)}`, summaryArea.x, summaryArea.y + 298);
     ctx.fillText(`Escalas: erro ±${maxAbsError.toFixed(1)}px | stage ±${maxAbsStage.toFixed(1)}px | frame ±${maxAbsFrame.toFixed(2)}ms`, summaryArea.x + 760, summaryArea.y + 298);
+    ctx.fillText(`Trigger->soltar perf lag: ${forensic.avgCommandLagPerfMs.toFixed(3)}ms`, summaryArea.x, summaryArea.y + 386);
+    ctx.fillText(`Gap medio de frame: ${forensic.avgTriggerReleaseFrameGap.toFixed(2)}`, summaryArea.x + 520, summaryArea.y + 386);
+    ctx.fillText(`Mesmo frame: ${(forensic.releaseSameFrameRate * 100).toFixed(0)}%`, summaryArea.x + 980, summaryArea.y + 386);
+    ctx.fillText(`Release distinto: ${(forensic.releaseDistinctRate * 100).toFixed(0)}%`, summaryArea.x + 1360, summaryArea.y + 386);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -1347,6 +1399,7 @@ export default function App() {
     frameDeltaMsRef.current = 16.7;
     frameBaselineMsRef.current = 16.7;
     frameDriftMsRef.current = 0;
+    frameTickRef.current = 0;
     shakeRef.current = 0;
     setGameState('PLAYING');
     setShowTutorial(true);
@@ -1365,13 +1418,19 @@ export default function App() {
     const dropX = canvas.width / 2 + swingX - BLOCK_SIZE / 2;
     const dropCenterX = dropX + BLOCK_SIZE / 2;
     const releaseTimestamp = Date.now();
+    const releasePerfMs = performance.now();
+    const releaseFrame = frameTickRef.current;
     const pending = pendingAutoTelemetryRef.current;
     if (pending) {
       pending.releaseTimestamp = releaseTimestamp;
+      pending.releasePerfMs = releasePerfMs;
+      pending.releaseFrame = releaseFrame;
       pending.releaseX = dropCenterX;
       pending.releaseError = dropCenterX - pending.targetX;
       pending.stageReadToRelease = pending.releaseError - pending.triggerError;
       pending.commandLagMs = releaseTimestamp - pending.triggerTimestamp;
+      pending.commandLagPerfMs = releasePerfMs - pending.triggerPerfMs;
+      pending.triggerReleaseFrameGap = releaseFrame - pending.triggerFrame;
     }
     
     // Calculate world Y based on screen Y (80) and current camera translation
@@ -1506,6 +1565,7 @@ export default function App() {
     lastFrameTimeRef.current = time;
 
     const currentState = gameStateRef.current;
+    frameTickRef.current += 1;
 
     // Reset transform and clear at the start of every frame
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1610,6 +1670,16 @@ export default function App() {
               const commandLagMs = typeof pending?.commandLagMs === 'number'
                 ? pending.commandLagMs
                 : undefined;
+              const commandLagPerfMs = typeof pending?.commandLagPerfMs === 'number'
+                ? pending.commandLagPerfMs
+                : undefined;
+              const triggerReleaseFrameGap = typeof pending?.triggerReleaseFrameGap === 'number'
+                ? pending.triggerReleaseFrameGap
+                : (
+                  typeof pending?.releaseFrame === 'number' && typeof pending?.triggerFrame === 'number'
+                    ? pending.releaseFrame - pending.triggerFrame
+                    : undefined
+                );
               const flightLagMs = typeof pending?.releaseTimestamp === 'number'
                 ? timestamp - pending.releaseTimestamp
                 : undefined;
@@ -1636,8 +1706,14 @@ export default function App() {
                     frameBaselineMs,
                     frameDriftMs,
                     triggerTimestamp: pending?.triggerTimestamp,
+                    triggerPerfMs: pending?.triggerPerfMs,
+                    triggerFrame: pending?.triggerFrame,
                     releaseTimestamp: pending?.releaseTimestamp,
+                    releasePerfMs: pending?.releasePerfMs,
+                    releaseFrame: pending?.releaseFrame,
                     commandLagMs,
+                    commandLagPerfMs,
+                    triggerReleaseFrameGap,
                     flightLagMs,
                     triggerMode: pending?.triggerMode ?? 'manual',
                   },
@@ -1745,6 +1821,7 @@ export default function App() {
         const crossedTarget = prevX !== null && (prevX - targetX) * (x - targetX) <= 0;
         const nearTarget = Math.abs(x - targetX) <= AUTO_TARGET_TOLERANCE;
         const now = Date.now();
+        const nowPerf = performance.now();
         const autoCooldownMs = captureModeRef.current ? CAPTURE_AUTO_DROP_COOLDOWN_MS : AUTO_DROP_COOLDOWN_MS;
 
         if ((crossedTarget || nearTarget) && now - lastAutoDropTimeRef.current > autoCooldownMs) {
@@ -1757,6 +1834,8 @@ export default function App() {
             frameBaselineMs: frameBaselineMsRef.current,
             frameDriftMs: frameDriftMsRef.current,
             triggerTimestamp: now,
+            triggerPerfMs: nowPerf,
+            triggerFrame: frameTickRef.current,
             triggerMode: crossedTarget ? 'crossed' : 'near',
           };
           dropBlock();
@@ -2113,6 +2192,22 @@ export default function App() {
                 <span>L-S / S-A</span>
                 <span>{forensic.avgReadToRelease.toFixed(1)} / {forensic.avgReleaseToLanding.toFixed(1)} px</span>
               </div>
+              <div className="flex items-center justify-between">
+                <span>T-S perf lag</span>
+                <span>{forensic.avgCommandLagPerfMs.toFixed(3)}ms</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Gap frame T-S</span>
+                <span>{forensic.avgTriggerReleaseFrameGap.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Mesmo frame</span>
+                <span>{(forensic.releaseSameFrameRate * 100).toFixed(0)}%</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Release distinto</span>
+                <span>{(forensic.releaseDistinctRate * 100).toFixed(0)}%</span>
+              </div>
             </div>
 
             <div className="mt-2.5">
@@ -2428,6 +2523,22 @@ export default function App() {
                   <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
                     <span>L-S / S-A</span>
                     <span>{forensic.avgReadToRelease.toFixed(1)} / {forensic.avgReleaseToLanding.toFixed(1)}px</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>T-S perf lag</span>
+                    <span>{forensic.avgCommandLagPerfMs.toFixed(3)}ms</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Gap frame T-S</span>
+                    <span>{forensic.avgTriggerReleaseFrameGap.toFixed(2)}</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Mesmo frame</span>
+                    <span>{(forensic.releaseSameFrameRate * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Release distinto</span>
+                    <span>{(forensic.releaseDistinctRate * 100).toFixed(0)}%</span>
                   </div>
                 </div>
 
