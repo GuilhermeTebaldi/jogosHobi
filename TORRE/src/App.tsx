@@ -859,7 +859,7 @@ export default function App() {
       </div>
 
       {showAutoPanel && (
-        <div className="absolute left-3 bottom-4 z-40 pointer-events-none">
+        <div className="absolute left-3 bottom-4 z-[80] pointer-events-none">
           <div className="w-[250px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3 pointer-events-auto">
             <div className="flex items-center justify-between mb-2">
               <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700">
