@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { TowerControl as Tower, Brain, Target, ChevronRight, ChevronLeft, User } from "lucide-react";
 import TorreGame from "../TORRE/src/App.tsx";
@@ -69,9 +69,8 @@ const secretSignalGame: Game = {
 };
 
 const SECRET_SIGNAL_UNLOCK_KEY = "gamehub_torre2_sinal_unlocked_v1";
-const SECRET_TAP_WINDOW_MS = 1300;
-const SECRET_PULL_ARM_MS = 8000;
-const SECRET_PULL_DISTANCE_PX = 70;
+const SECRET_MENU_TAP_WINDOW_MS = 1800;
+const SECRET_MENU_TAP_TARGET = 5;
 
 export default function App() {
   const [activeGameId, setActiveGameId] = useState<GameId | null>(null);
@@ -84,10 +83,7 @@ export default function App() {
       return false;
     }
   });
-  const [secretSwipeArmed, setSecretSwipeArmed] = useState(false);
-  const [secretSwipeCount, setSecretSwipeCount] = useState(0);
-  const menuTapTimesRef = useRef<number[]>([]);
-  const swipeStartYRef = useRef<number | null>(null);
+  const hubTapTimesRef = useRef<number[]>([]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -97,15 +93,6 @@ export default function App() {
       // Ignore storage write errors.
     }
   }, [secretUnlocked]);
-
-  useEffect(() => {
-    if (!secretSwipeArmed) return;
-    const timer = window.setTimeout(() => {
-      setSecretSwipeArmed(false);
-      setSecretSwipeCount(0);
-    }, SECRET_PULL_ARM_MS);
-    return () => window.clearTimeout(timer);
-  }, [secretSwipeArmed]);
 
   const menuGames = useMemo(() => (
     secretUnlocked || activeGameId === "torre2sinal"
@@ -125,40 +112,26 @@ export default function App() {
     setActiveGameId(gameId);
     setIsGameListOpen(false);
   };
-  const handleMenuToggle = () => {
+  const handleHubSecretTap = () => {
+    if (isGameOpen || secretUnlocked) return;
     const now = Date.now();
-    const recent = menuTapTimesRef.current.filter((timestamp) => now - timestamp <= SECRET_TAP_WINDOW_MS);
+    const recent = hubTapTimesRef.current.filter((timestamp) => now - timestamp <= SECRET_MENU_TAP_WINDOW_MS);
     recent.push(now);
-    menuTapTimesRef.current = recent;
-    if (recent.length >= 3 && !secretUnlocked) {
-      setSecretSwipeArmed(true);
-      setSecretSwipeCount(0);
+    hubTapTimesRef.current = recent;
+    if (recent.length >= SECRET_MENU_TAP_TARGET) {
+      setSecretUnlocked(true);
+      hubTapTimesRef.current = [];
     }
+  };
+  const handleMenuToggle = () => {
     setIsGameListOpen((prev) => !prev);
-  };
-  const handleSecretPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!secretSwipeArmed || secretUnlocked) return;
-    swipeStartYRef.current = event.clientY;
-  };
-  const handleSecretPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!secretSwipeArmed || secretUnlocked) return;
-    const startY = swipeStartYRef.current;
-    swipeStartYRef.current = null;
-    if (startY === null) return;
-    const deltaY = event.clientY - startY;
-    if (deltaY < SECRET_PULL_DISTANCE_PX) return;
-    setSecretSwipeCount((prev) => {
-      const next = prev + 1;
-      if (next >= 2) {
-        setSecretUnlocked(true);
-        setSecretSwipeArmed(false);
-      }
-      return next;
-    });
   };
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans selection:bg-white/20">
+    <div
+      className="min-h-screen bg-black text-white font-sans selection:bg-white/20"
+      onPointerDown={handleHubSecretTap}
+    >
       {isGameOpen && (
         <>
           <button
@@ -181,21 +154,11 @@ export default function App() {
             />
 
             <aside
-              onPointerDown={handleSecretPointerDown}
-              onPointerUp={handleSecretPointerUp}
-              onPointerCancel={() => {
-                swipeStartYRef.current = null;
-              }}
               className={`absolute top-0 left-0 h-full w-72 max-w-[86vw] bg-black/92 border-r border-white/15 backdrop-blur-xl p-4 pt-20 transition-transform duration-200 ${
                 isGameListOpen ? "translate-x-0" : "-translate-x-full"
               }`}
             >
               <p className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Lista de Jogos</p>
-              {secretSwipeArmed && !secretUnlocked && (
-                <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-cyan-300">
-                  Modo oculto: arraste para baixo {Math.max(0, 2 - secretSwipeCount)}x
-                </p>
-              )}
               {secretUnlocked && (
                 <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-emerald-300">
                   Torre 2 Sinal liberado
@@ -276,6 +239,11 @@ export default function App() {
               >
                 ESCOLHA SEU JOGO
               </motion.h1>
+              {secretUnlocked && (
+                <p className="text-emerald-300 font-mono text-[10px] uppercase tracking-widest mb-1">
+                  Torre 2 Sinal liberado (menu lateral)
+                </p>
+              )}
               <motion.p
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
