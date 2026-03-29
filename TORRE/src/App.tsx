@@ -79,8 +79,8 @@ const TAP_WINDOW_MS = 380;
 const AUTO_DROP_COOLDOWN_MS = 220;
 const CAPTURE_AUTO_DROP_COOLDOWN_MS = 120;
 const AUTO_TARGET_TOLERANCE = 10;
-const AUTO_TRACE_MAX_POINTS = 240;
-const AUTO_TRACE_MAX_SESSIONS = 120;
+const AUTO_TRACE_MAX_POINTS = Number.MAX_SAFE_INTEGER;
+const AUTO_TRACE_MAX_SESSIONS = Number.MAX_SAFE_INTEGER;
 const NORMAL_SPAWN_DELAY_MS = 800;
 const CAPTURE_SPAWN_DELAY_MS = 340;
 const CAPTURE_SWING_MULTIPLIER = 1.45;
@@ -117,8 +117,7 @@ const loadAutoTraceSessions = (): AutoTraceSession[] => {
         typeof session.reason === 'string' &&
         typeof session.targetX === 'number' &&
         Array.isArray(session.points)
-      ))
-      .slice(0, AUTO_TRACE_MAX_SESSIONS);
+      ));
   } catch {
     return [];
   }
@@ -141,7 +140,7 @@ const loadAutoTraceDraft = (): AutoTraceDraft | null => {
     return {
       startedAt,
       targetX,
-      points: points.slice(-AUTO_TRACE_MAX_POINTS),
+      points,
       captureMode,
       updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : undefined,
     };
@@ -191,6 +190,8 @@ export default function App() {
   ));
   const [autoTraceSessions, setAutoTraceSessions] = useState<AutoTraceSession[]>(() => loadAutoTraceSessions());
   const [autoTraceNotice, setAutoTraceNotice] = useState<string | null>(null);
+  const [liveLabOpen, setLiveLabOpen] = useState(false);
+  const [liveLabGlassMode, setLiveLabGlassMode] = useState(false);
   const autoDropEnabledRef = useRef(false);
   const autoDropTargetXRef = useRef<number | null>(null);
   const autoTraceRef = useRef<AutoTracePoint[]>([]);
@@ -310,7 +311,9 @@ export default function App() {
       baseY,
       autoPath: '',
       autoValuesCount: 0,
+      autoValues: [] as number[],
       spectrumBars: [] as Array<{ x: number; y: number; h: number; w: number }>,
+      spectrumValues: [] as number[],
       corrTrigger: 0,
       corrFrame: 0,
       corrLanding: 0,
@@ -322,6 +325,9 @@ export default function App() {
       lagPathTrigger: '',
       lagPathFrame: '',
       lagPathLanding: '',
+      lagSeriesTrigger: [] as number[],
+      lagSeriesFrame: [] as number[],
+      lagSeriesLanding: [] as number[],
       lagBestTrigger: 0,
       lagBestFrame: 0,
       lagBestLanding: 0,
@@ -329,6 +335,7 @@ export default function App() {
       lagBestFrameCorr: 0,
       lagBestLandingCorr: 0,
       phaseBars: [] as Array<{ x: number; w: number; color: string }>,
+      phaseSegments: [] as Array<{ startRatio: number; endRatio: number; phase: 'trigger' | 'frame' | 'landing' | 'mixed' }>,
       phaseCounts: { trigger: 0, frame: 0, landing: 0, mixed: 0 },
       topEvents: [] as Array<{
         drop: number;
@@ -517,6 +524,7 @@ export default function App() {
 
     const windowSize = 24;
     const phaseBars: Array<{ x: number; w: number; color: string }> = [];
+    const phaseSegments: Array<{ startRatio: number; endRatio: number; phase: 'trigger' | 'frame' | 'landing' | 'mixed' }> = [];
     const phaseCounts = { trigger: 0, frame: 0, landing: 0, mixed: 0 };
     for (let start = 0; start < errors.length; start += windowSize) {
       const end = Math.min(errors.length, start + windowSize);
@@ -530,8 +538,10 @@ export default function App() {
         { id: 'frame' as const, value: Math.abs(correlation(e, f)) },
         { id: 'landing' as const, value: Math.abs(correlation(e, l)) },
       ].sort((a, b) => b.value - a.value);
-      const phase = ranked[0].value - ranked[1].value < 0.1 ? 'mixed' : ranked[0].id;
+      const phase: 'trigger' | 'frame' | 'landing' | 'mixed' = ranked[0].value - ranked[1].value < 0.1 ? 'mixed' : ranked[0].id;
       phaseCounts[phase] += 1;
+      const startRatio = start / errors.length;
+      const endRatio = end / errors.length;
       const x = pad + (start / errors.length) * (width - pad * 2);
       const w = Math.max(2, ((end - start) / errors.length) * (width - pad * 2));
       const color = phase === 'trigger'
@@ -542,6 +552,7 @@ export default function App() {
             ? '#34d399'
             : '#94a3b8';
       phaseBars.push({ x, w, color });
+      phaseSegments.push({ startRatio, endRatio, phase });
     }
 
     const absErrors = errors.map((value) => Math.abs(value));
@@ -587,7 +598,9 @@ export default function App() {
       baseY,
       autoPath,
       autoValuesCount: autoValues.length,
+      autoValues,
       spectrumBars,
+      spectrumValues: bins.map((bin) => bin.amp),
       corrTrigger,
       corrFrame,
       corrLanding,
@@ -599,6 +612,9 @@ export default function App() {
       lagPathTrigger,
       lagPathFrame,
       lagPathLanding,
+      lagSeriesTrigger: lagCorrTrigger,
+      lagSeriesFrame: lagCorrFrame,
+      lagSeriesLanding: lagCorrLanding,
       lagBestTrigger: lagBestTrigger.lag,
       lagBestFrame: lagBestFrame.lag,
       lagBestLanding: lagBestLanding.lag,
@@ -606,6 +622,7 @@ export default function App() {
       lagBestFrameCorr: lagBestFrame.corr,
       lagBestLandingCorr: lagBestLanding.corr,
       phaseBars,
+      phaseSegments,
       phaseCounts,
       topEvents,
       origin: top.id,
@@ -636,6 +653,7 @@ export default function App() {
       : forensic.origin === 'trigger'
         ? 'Disparo/limiar'
         : '--';
+  const maxSpectrumValue = Math.max(1e-9, ...forensic.spectrumValues);
 
   const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
     const points = autoTraceRef.current;
@@ -657,7 +675,7 @@ export default function App() {
       captureMode: captureModeRef.current,
     };
 
-    setAutoTraceSessions((prev) => [session, ...prev].slice(0, AUTO_TRACE_MAX_SESSIONS));
+    setAutoTraceSessions((prev) => [session, ...prev]);
     setAutoTraceStartedAt(null);
   }, []);
 
@@ -690,7 +708,7 @@ export default function App() {
       source: autoTrace.length > 0 ? 'active' : 'stored_session',
       captureMode,
       samplingProfile: {
-        maxPoints: AUTO_TRACE_MAX_POINTS,
+        maxPoints: 'infinite',
         autoCooldownMs: currentAutoCooldown,
         spawnDelayMs: currentSpawnDelay,
       },
@@ -718,12 +736,18 @@ export default function App() {
         phaseCounts: forensic.phaseCounts,
         topEvents: forensic.topEvents,
       },
+      fullHistory: {
+        activeTracePoints: autoTrace,
+        sessions: autoTraceSessions,
+        sessionsCount: autoTraceSessions.length,
+        totalPoints: autoTrace.length + autoTraceSessions.reduce((sum, session) => sum + session.points.length, 0),
+      },
       points: traceForView,
     };
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -737,7 +761,7 @@ export default function App() {
       source: autoTrace.length > 0 ? 'active' : 'stored_session',
       captureMode,
       samplingProfile: {
-        maxPoints: AUTO_TRACE_MAX_POINTS,
+        maxPoints: 'infinite',
         autoCooldownMs: currentAutoCooldown,
         spawnDelayMs: currentSpawnDelay,
       },
@@ -765,6 +789,12 @@ export default function App() {
         phaseCounts: forensic.phaseCounts,
         topEvents: forensic.topEvents,
       },
+      fullHistory: {
+        activeTracePoints: autoTrace,
+        sessions: autoTraceSessions,
+        sessionsCount: autoTraceSessions.length,
+        totalPoints: autoTrace.length + autoTraceSessions.reduce((sum, session) => sum + session.points.length, 0),
+      },
       points: traceForView,
     };
 
@@ -774,7 +804,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -788,68 +818,95 @@ export default function App() {
     const readFrameDrift = (point: AutoTracePoint) => (
       typeof point.frameDriftMs === 'number' ? point.frameDriftMs : 0
     );
+    const errors = traceForView.map((point) => point.error);
+    const triggerErrors = traceForView.map(readTriggerError);
+    const frameDrifts = traceForView.map(readFrameDrift);
+    const maxAbsError = Math.max(12, ...errors.map((value) => Math.abs(value)));
+    const maxAbsTrigger = Math.max(12, ...triggerErrors.map((value) => Math.abs(value)));
+    const maxAbsFrame = Math.max(2.5, ...frameDrifts.map((value) => Math.abs(value)));
+    const maxAbsAuto = Math.max(0.18, ...forensic.autoValues.map((value) => Math.abs(value)));
+    const maxAbsLag = Math.max(
+      0.16,
+      ...forensic.lagSeriesTrigger.map((value) => Math.abs(value)),
+      ...forensic.lagSeriesFrame.map((value) => Math.abs(value)),
+      ...forensic.lagSeriesLanding.map((value) => Math.abs(value)),
+    );
+    const maxSpectrum = Math.max(1e-9, ...forensic.spectrumValues);
 
-    const width = 1200;
-    const height = 800;
-    const chartLeft = 90;
-    const chartTop = 170;
-    const chartWidth = 1020;
-    const chartHeight = 470;
-    const centerY = chartTop + chartHeight / 2;
-    const maxAbsError = Math.max(12, ...traceForView.map((point) => Math.abs(point.error)));
-    const maxAbsTrigger = Math.max(12, ...traceForView.map((point) => Math.abs(readTriggerError(point))));
-    const maxAbsFrame = Math.max(2.5, ...traceForView.map((point) => Math.abs(readFrameDrift(point))));
-
+    const posterWidth = 1800;
+    const posterHeight = 2450;
+    const renderScale = 2;
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = Math.floor(posterWidth * renderScale);
+    canvas.height = Math.floor(posterHeight * renderScale);
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       setNotice('Falha ao gerar cartaz');
       return;
     }
+    ctx.scale(renderScale, renderScale);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
-    const gradient = ctx.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, '#0f172a');
-    gradient.addColorStop(1, '#1e293b');
+    const gradient = ctx.createLinearGradient(0, 0, posterWidth, posterHeight);
+    gradient.addColorStop(0, '#0b132a');
+    gradient.addColorStop(1, '#1f2a44');
     ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, posterWidth, posterHeight);
 
-    ctx.fillStyle = '#e2e8f0';
-    ctx.font = '900 42px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText('TORRE - AUTO TRACE', 90, 78);
+    const drawCard = (x: number, y: number, w: number, h: number, title: string, subtitle?: string) => {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.36)';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 18);
+      ctx.fill();
+      ctx.stroke();
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '600 21px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(`Inicio: ${activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : '--'}`, 90, 116);
-    ctx.fillText(`Ultimo ponto: ${formatPreciseTimestamp(traceForView[traceForView.length - 1].timestamp)}`, 90, 144);
-
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(chartLeft, chartTop, chartWidth, chartHeight);
-
-    ctx.beginPath();
-    ctx.setLineDash([8, 8]);
-    ctx.moveTo(chartLeft, centerY);
-    ctx.lineTo(chartLeft + chartWidth, centerY);
-    ctx.strokeStyle = 'rgba(226, 232, 240, 0.35)';
-    ctx.stroke();
-    ctx.setLineDash([]);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '800 28px system-ui, -apple-system, Segoe UI, sans-serif';
+      ctx.fillText(title, x + 20, y + 38);
+      if (subtitle) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '700 17px system-ui, -apple-system, Segoe UI, sans-serif';
+        ctx.fillText(subtitle, x + 20, y + 64);
+      }
+      return {
+        x: x + 18,
+        y: y + (subtitle ? 82 : 56),
+        w: w - 36,
+        h: h - (subtitle ? 102 : 76),
+      };
+    };
 
     const drawSeries = (
+      area: { x: number; y: number; w: number; h: number },
       values: number[],
       maxAbs: number,
       color: string,
       widthPx: number,
       dashed: number[] = [],
       withDots = false,
+      baseline = true,
     ) => {
       if (values.length === 0) return;
+      const centerY = area.y + area.h / 2;
+      const pad = 8;
+      if (baseline) {
+        ctx.beginPath();
+        ctx.setLineDash([7, 7]);
+        ctx.moveTo(area.x, centerY);
+        ctx.lineTo(area.x + area.w, centerY);
+        ctx.strokeStyle = 'rgba(226,232,240,0.24)';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       ctx.beginPath();
       values.forEach((value, index) => {
         const ratio = values.length <= 1 ? 1 : index / (values.length - 1);
-        const x = chartLeft + ratio * chartWidth;
-        const y = centerY - (value / maxAbs) * (chartHeight / 2 - 18);
+        const x = area.x + ratio * area.w;
+        const y = centerY - (value / maxAbs) * (area.h / 2 - pad);
         if (index === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
@@ -862,62 +919,117 @@ export default function App() {
       ctx.fillStyle = color;
       values.forEach((value, index) => {
         const ratio = values.length <= 1 ? 1 : index / (values.length - 1);
-        const x = chartLeft + ratio * chartWidth;
-        const y = centerY - (value / maxAbs) * (chartHeight / 2 - 18);
+        const x = area.x + ratio * area.w;
+        const y = centerY - (value / maxAbs) * (area.h / 2 - pad);
         ctx.beginPath();
-        ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+        ctx.arc(x, y, 2.4, 0, Math.PI * 2);
         ctx.fill();
       });
     };
 
-    drawSeries(traceForView.map((point) => point.error), maxAbsError, '#22d3ee', 3.2, [], true);
-    drawSeries(traceForView.map(readTriggerError), maxAbsTrigger, '#f59e0b', 2.3, [7, 5]);
-    drawSeries(traceForView.map(readFrameDrift), maxAbsFrame, '#f472b6', 2, [2, 5]);
-
     ctx.fillStyle = '#e2e8f0';
-    ctx.font = '700 18px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillRect(90, 728, 18, 4);
-    ctx.fillStyle = '#22d3ee';
-    ctx.fillRect(90, 728, 18, 4);
-    ctx.fillStyle = '#cbd5e1';
-    ctx.fillText('Erro final', 114, 734);
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(246, 728, 18, 4);
-    ctx.fillStyle = '#cbd5e1';
-    ctx.fillText('Erro no disparo', 270, 734);
-    ctx.fillStyle = '#f472b6';
-    ctx.fillRect(444, 728, 18, 4);
-    ctx.fillStyle = '#cbd5e1';
-    ctx.fillText('Drift de frame', 468, 734);
+    ctx.font = '900 58px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText('TORRE - LAB FORENSE AO VIVO', 72, 82);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '700 24px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(`Inicio: ${activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : '--'}`, 72, 118);
+    ctx.fillText(`Ultimo ponto: ${formatPreciseTimestamp(traceForView[traceForView.length - 1].timestamp)}`, 72, 148);
 
+    const mainArea = drawCard(70, 176, 1660, 760, 'Sinal Principal', 'Erro final + disparo + frame');
+    drawSeries(mainArea, errors, maxAbsError, '#22d3ee', 4.2, [], true, true);
+    drawSeries(mainArea, triggerErrors, maxAbsTrigger, '#f59e0b', 2.6, [9, 6], false, false);
+    drawSeries(mainArea, frameDrifts, maxAbsFrame, '#f472b6', 2.2, [3, 6], false, false);
+
+    const miniTop = 980;
+    const cardW = 530;
+    const gap = 34;
+    const autoArea = drawCard(70, miniTop, cardW, 360, 'Autocorrelacao', `lag ${forensic.dominantLag} | r ${forensic.dominantLagCorr.toFixed(2)}`);
+    drawSeries(autoArea, forensic.autoValues, maxAbsAuto, '#34d399', 2.7, [], false, true);
+
+    const spectrumArea = drawCard(70 + cardW + gap, miniTop, cardW, 360, 'Espectro', `periodo ${forensic.peakPeriodDrops > 0 ? forensic.peakPeriodDrops.toFixed(1) : '--'} drops`);
+    ctx.beginPath();
+    ctx.moveTo(spectrumArea.x, spectrumArea.y + spectrumArea.h);
+    ctx.lineTo(spectrumArea.x + spectrumArea.w, spectrumArea.y + spectrumArea.h);
+    ctx.strokeStyle = 'rgba(226,232,240,0.25)';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    const barStep = forensic.spectrumValues.length > 0 ? spectrumArea.w / forensic.spectrumValues.length : 0;
+    const barWidth = Math.max(1.6, barStep * 0.72);
+    forensic.spectrumValues.forEach((value, index) => {
+      const h = (value / maxSpectrum) * (spectrumArea.h - 8);
+      const x = spectrumArea.x + index * barStep + (barStep - barWidth) / 2;
+      const y = spectrumArea.y + spectrumArea.h - h;
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(x, y, barWidth, h);
+    });
+
+    const lagArea = drawCard(70 + (cardW + gap) * 2, miniTop, cardW, 360, 'Lag Scanner', `T ${forensic.lagBestTrigger}/${forensic.lagBestTriggerCorr.toFixed(2)} | F ${forensic.lagBestFrame}/${forensic.lagBestFrameCorr.toFixed(2)} | Q ${forensic.lagBestLanding}/${forensic.lagBestLandingCorr.toFixed(2)}`);
+    drawSeries(lagArea, forensic.lagSeriesTrigger, maxAbsLag, '#f59e0b', 2.3, [], false, true);
+    drawSeries(lagArea, forensic.lagSeriesFrame, maxAbsLag, '#f472b6', 2.1, [5, 4], false, false);
+    drawSeries(lagArea, forensic.lagSeriesLanding, maxAbsLag, '#34d399', 2.1, [2, 4], false, false);
+
+    const regimeArea = drawCard(70, 1372, 1034, 330, 'Mapa de Regime', `T ${forensic.phaseCounts.trigger} | F ${forensic.phaseCounts.frame} | Q ${forensic.phaseCounts.landing} | M ${forensic.phaseCounts.mixed}`);
+    ctx.fillStyle = 'rgba(30,41,59,0.9)';
+    ctx.fillRect(regimeArea.x, regimeArea.y + 28, regimeArea.w, 44);
+    forensic.phaseSegments.forEach((segment) => {
+      const x = regimeArea.x + segment.startRatio * regimeArea.w;
+      const w = Math.max(2, (segment.endRatio - segment.startRatio) * regimeArea.w);
+      const color = segment.phase === 'trigger'
+        ? '#f59e0b'
+        : segment.phase === 'frame'
+          ? '#f472b6'
+          : segment.phase === 'landing'
+            ? '#34d399'
+            : '#94a3b8';
+      ctx.fillStyle = color;
+      ctx.fillRect(x, regimeArea.y + 32, w, 36);
+    });
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '700 16px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(`Origem provavel: ${forensicOriginLabel} (${(forensic.originConfidence * 100).toFixed(0)}%)`, regimeArea.x, regimeArea.y + 104);
+    ctx.fillText(`Corr E/D/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, regimeArea.x, regimeArea.y + 132);
+    ctx.fillText(`Troca de lado: ${(forensic.flipRate * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 160);
+
+    const eventsArea = drawCard(1132, 1372, 598, 330, 'Top Eventos', 'Picos mais fortes');
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '700 15px system-ui, -apple-system, Segoe UI, sans-serif';
+    forensic.topEvents.slice(0, 5).forEach((event, index) => {
+      const y = eventsArea.y + 26 + index * 42;
+      ctx.fillText(
+        `#${event.drop} ${event.side} ${formatPreciseTimestamp(event.timestamp)} | score ${event.score.toFixed(2)} | erro ${event.error.toFixed(1)}px`,
+        eventsArea.x,
+        y,
+      );
+    });
+
+    const summaryArea = drawCard(70, 1738, 1660, 600, 'Resumo Expandido', 'Métricas e contexto de captura');
     const latest = traceForView[traceForView.length - 1];
     const latestTrigger = typeof latest.triggerError === 'number' ? latest.triggerError : latest.error;
     const latestFrame = typeof latest.frameDriftMs === 'number' ? latest.frameDriftMs : 0;
     ctx.fillStyle = '#e2e8f0';
-    ctx.font = '700 20px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(`Pontos: ${traceForView.length}`, 90, 700);
-    ctx.fillText(`Escala: ±${maxAbsError.toFixed(1)}px`, 300, 700);
-    ctx.fillText(`Erro final: ${latest.error.toFixed(1)}px`, 560, 700);
-    ctx.fillText(`Alvo X: ${latest.targetX.toFixed(1)}px`, 910, 700);
-    ctx.fillText(`Disparo: ${latestTrigger.toFixed(1)}px`, 560, 668);
-    ctx.fillText(`Frame drift: ${latestFrame.toFixed(2)}ms`, 910, 668);
-    ctx.fillText(`Sinal dominante: ${autoGraph.dominantSignal ?? '--'}`, 90, 668);
-    ctx.fillText(`Modo captura: ${captureMode ? 'ON' : 'OFF'}`, 300, 668);
-    ctx.fillText(`Origem provavel: ${forensicOriginLabel}`, 90, 636);
-    ctx.fillText(`Corr D/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, 300, 636);
-    ctx.fillText(`Periodo dominante: ${forensic.peakPeriodDrops > 0 ? `${forensic.peakPeriodDrops.toFixed(1)} drops` : '--'}`, 910, 636);
-    ctx.fillText(`Lag T/F/Q: ${forensic.lagBestTrigger}/${forensic.lagBestFrame}/${forensic.lagBestLanding}`, 300, 604);
-    ctx.fillText(`Regimes T/F/Q/M: ${forensic.phaseCounts.trigger}/${forensic.phaseCounts.frame}/${forensic.phaseCounts.landing}/${forensic.phaseCounts.mixed}`, 910, 604);
+    ctx.font = '800 28px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(`Pontos: ${traceForView.length}`, summaryArea.x, summaryArea.y + 34);
+    ctx.fillText(`Escala: ±${maxAbsError.toFixed(1)}px`, summaryArea.x + 360, summaryArea.y + 34);
+    ctx.fillText(`Alvo X: ${latest.targetX.toFixed(1)}px`, summaryArea.x + 760, summaryArea.y + 34);
+    ctx.fillText(`Modo captura: ${captureMode ? 'ON' : 'OFF'}`, summaryArea.x + 1160, summaryArea.y + 34);
+    ctx.fillText(`Erro final: ${latest.error.toFixed(2)}px`, summaryArea.x, summaryArea.y + 78);
+    ctx.fillText(`Disparo: ${latestTrigger.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 78);
+    ctx.fillText(`Frame drift: ${latestFrame.toFixed(3)}ms`, summaryArea.x + 760, summaryArea.y + 78);
+    ctx.fillText(`Dominante: ${autoGraph.dominantSignal ?? '--'} / ${forensicOriginLabel}`, summaryArea.x + 1160, summaryArea.y + 78);
+    ctx.fillText(`Média disparo: ${autoGraph.avgTrigger.toFixed(2)}px`, summaryArea.x, summaryArea.y + 122);
+    ctx.fillText(`Média queda: ${autoGraph.avgLanding.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 122);
+    ctx.fillText(`Média frame: ${autoGraph.avgFrame.toFixed(3)}ms`, summaryArea.x + 760, summaryArea.y + 122);
+    ctx.fillText(`Lag dom: ${forensic.dominantLag} / ${forensic.dominantLagCorr.toFixed(2)}`, summaryArea.x + 1160, summaryArea.y + 122);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
-    link.href = canvas.toDataURL('image/png');
+    link.href = canvas.toDataURL('image/png', 1.0);
     link.download = `torre-auto-cartaz-${stamp}.png`;
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setNotice('Cartaz baixado');
-  }, [activeTraceStartedAt, autoGraph.dominantSignal, captureMode, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.lagBestFrame, forensic.lagBestLanding, forensic.lagBestTrigger, forensic.peakPeriodDrops, forensic.phaseCounts.frame, forensic.phaseCounts.landing, forensic.phaseCounts.mixed, forensic.phaseCounts.trigger, forensicOriginLabel, setNotice, traceForView]);
+    setNotice('Cartaz HQ baixado');
+  }, [activeTraceStartedAt, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, captureMode, forensic, forensicOriginLabel, setNotice, traceForView]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -934,7 +1046,7 @@ export default function App() {
       const draft: AutoTraceDraft = {
         startedAt: autoTraceStartedAt,
         targetX: autoDropTargetX,
-        points: autoTrace.slice(-AUTO_TRACE_MAX_POINTS),
+        points: autoTrace,
         captureMode,
         updatedAt: Date.now(),
       };
@@ -1262,8 +1374,8 @@ export default function App() {
                     triggerMode: pending?.triggerMode ?? 'manual',
                   },
                 ];
-                autoTraceRef.current = next.slice(-AUTO_TRACE_MAX_POINTS);
-                return next.slice(-AUTO_TRACE_MAX_POINTS);
+                autoTraceRef.current = next;
+                return next;
               });
               pendingAutoTelemetryRef.current = null;
             }
@@ -1797,7 +1909,7 @@ export default function App() {
               </div>
             )}
 
-            <div className="mt-3 grid grid-cols-3 gap-1.5">
+            <div className="mt-3 grid grid-cols-2 gap-1.5">
               <button
                 type="button"
                 onClick={handleCopyJson}
@@ -1819,6 +1931,13 @@ export default function App() {
               >
                 Cartaz
               </button>
+              <button
+                type="button"
+                onClick={() => setLiveLabOpen(true)}
+                className="py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider bg-slate-200 text-slate-800 border border-slate-300 hover:bg-slate-300 transition-colors"
+              >
+                Ao Vivo
+              </button>
             </div>
 
             {autoTraceNotice && (
@@ -1829,6 +1948,188 @@ export default function App() {
                 Ultima sessao salva: {formatPreciseTimestamp(lastStoredSession.endedAt)} | {lastStoredSession.captureMode ? 'captura' : 'normal'}
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {liveLabOpen && showAutoPanel && (
+        <div
+          className={`absolute inset-0 z-[88] pointer-events-auto ${
+            liveLabGlassMode
+              ? 'bg-slate-900/20 backdrop-blur-[1px]'
+              : 'bg-slate-950/88 backdrop-blur-md'
+          }`}
+        >
+          <div className="absolute top-3 right-3 flex items-center gap-2 z-[5]">
+            <button
+              type="button"
+              onClick={() => setLiveLabGlassMode((prev) => !prev)}
+              className={`px-3 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider border ${
+                liveLabGlassMode
+                  ? 'bg-cyan-200/80 text-cyan-900 border-cyan-300'
+                  : 'bg-white/90 text-slate-900 border-white/70'
+              }`}
+            >
+              {liveLabGlassMode ? 'Modo Normal' : 'Modo Vidro'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setLiveLabOpen(false)}
+              className="px-3 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider bg-rose-500/90 text-white border border-rose-300/60"
+            >
+              Fechar
+            </button>
+          </div>
+
+          <div className="absolute inset-0 pt-16 pb-4 px-3 sm:px-6 overflow-auto">
+            <div
+              className={`mx-auto max-w-[1400px] rounded-3xl border p-4 sm:p-6 ${
+                liveLabGlassMode
+                  ? 'bg-white/22 border-white/35 shadow-2xl'
+                  : 'bg-slate-900/82 border-slate-700/70 shadow-2xl'
+              }`}
+            >
+              <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
+                <div>
+                  <h3 className={`text-2xl sm:text-3xl font-black tracking-tight ${liveLabGlassMode ? 'text-white' : 'text-slate-100'}`}>
+                    LAB AO VIVO - SINAL
+                  </h3>
+                  <p className={`text-xs sm:text-sm font-bold ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    Origem provável: {forensicOriginLabel} | Confiança {(forensic.originConfidence * 100).toFixed(0)}% | Pontos {traceForView.length}
+                  </p>
+                </div>
+                <div className={`text-[10px] font-black uppercase tracking-widest ${liveLabGlassMode ? 'text-white/75' : 'text-slate-400'}`}>
+                  Spawn {currentSpawnDelay}ms | Cooldown {currentAutoCooldown}ms
+                </div>
+              </div>
+
+              <div className={`rounded-2xl p-2 sm:p-3 border ${liveLabGlassMode ? 'bg-white/20 border-white/30' : 'bg-slate-950/80 border-slate-800/80'}`}>
+                <svg viewBox={`0 0 ${autoGraph.width} ${autoGraph.height}`} className="w-full h-[34dvh] sm:h-[40dvh] block rounded-xl">
+                  <rect x="0" y="0" width={autoGraph.width} height={autoGraph.height} fill="rgba(2,6,23,0.86)" />
+                  <line
+                    x1="0"
+                    y1={autoGraph.centerY}
+                    x2={autoGraph.width}
+                    y2={autoGraph.centerY}
+                    stroke="rgba(255,255,255,0.22)"
+                    strokeWidth="1"
+                    strokeDasharray="4 4"
+                  />
+                  {autoGraph.path && (
+                    <path d={autoGraph.path} fill="none" stroke="#22d3ee" strokeWidth="2.35" strokeLinecap="round" strokeLinejoin="round" />
+                  )}
+                  {autoGraph.triggerPath && (
+                    <path d={autoGraph.triggerPath} fill="none" stroke="#f59e0b" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="5 4" />
+                  )}
+                  {autoGraph.framePath && (
+                    <path d={autoGraph.framePath} fill="none" stroke="#f472b6" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="2 5" />
+                  )}
+                  {autoGraph.points.map((point, index) => (
+                    <circle key={index} cx={point.x} cy={point.y} r="1.8" fill="#22d3ee" />
+                  ))}
+                </svg>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-3">
+                <div className={`rounded-2xl p-2 border ${liveLabGlassMode ? 'bg-white/20 border-white/30' : 'bg-slate-950/80 border-slate-800/80'}`}>
+                  <div className={`text-[10px] font-black uppercase tracking-wider mb-1 ${liveLabGlassMode ? 'text-white/85' : 'text-slate-300'}`}>
+                    Autocorrelação
+                  </div>
+                  <svg viewBox={`0 0 ${forensic.width} ${forensic.height}`} className="w-full h-[16dvh] min-h-[120px] block rounded-lg">
+                    <rect x="0" y="0" width={forensic.width} height={forensic.height} fill="rgba(2,6,23,0.86)" />
+                    <line x1="0" y1={forensic.centerY} x2={forensic.width} y2={forensic.centerY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="4 4" />
+                    {forensic.autoPath && (
+                      <path d={forensic.autoPath} fill="none" stroke="#34d399" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                    )}
+                  </svg>
+                </div>
+
+                <div className={`rounded-2xl p-2 border ${liveLabGlassMode ? 'bg-white/20 border-white/30' : 'bg-slate-950/80 border-slate-800/80'}`}>
+                  <div className={`text-[10px] font-black uppercase tracking-wider mb-1 ${liveLabGlassMode ? 'text-white/85' : 'text-slate-300'}`}>
+                    Espectro
+                  </div>
+                  <svg viewBox={`0 0 ${forensic.width} ${forensic.height}`} className="w-full h-[16dvh] min-h-[120px] block rounded-lg">
+                    <rect x="0" y="0" width={forensic.width} height={forensic.height} fill="rgba(2,6,23,0.86)" />
+                    <line x1="0" y1={forensic.baseY} x2={forensic.width} y2={forensic.baseY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+                    {forensic.spectrumValues.map((value, index) => {
+                      const step = forensic.spectrumValues.length > 0 ? forensic.width / forensic.spectrumValues.length : 0;
+                      const barW = Math.max(1.2, step * 0.72);
+                      const h = (value / maxSpectrumValue) * (forensic.height - 14);
+                      const x = index * step + (step - barW) / 2;
+                      const y = forensic.baseY - h;
+                      return <rect key={index} x={x} y={y} width={barW} height={Math.max(0.6, h)} fill="#38bdf8" opacity="0.9" />;
+                    })}
+                  </svg>
+                </div>
+
+                <div className={`rounded-2xl p-2 border ${liveLabGlassMode ? 'bg-white/20 border-white/30' : 'bg-slate-950/80 border-slate-800/80'}`}>
+                  <div className={`text-[10px] font-black uppercase tracking-wider mb-1 ${liveLabGlassMode ? 'text-white/85' : 'text-slate-300'}`}>
+                    Lag Scanner
+                  </div>
+                  <svg viewBox={`0 0 ${forensic.width} ${forensic.height}`} className="w-full h-[16dvh] min-h-[120px] block rounded-lg">
+                    <rect x="0" y="0" width={forensic.width} height={forensic.height} fill="rgba(2,6,23,0.86)" />
+                    <line x1="0" y1={forensic.centerY} x2={forensic.width} y2={forensic.centerY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="4 4" />
+                    {forensic.lagPathTrigger && (
+                      <path d={forensic.lagPathTrigger} fill="none" stroke="#f59e0b" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                    )}
+                    {forensic.lagPathFrame && (
+                      <path d={forensic.lagPathFrame} fill="none" stroke="#f472b6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="4 4" />
+                    )}
+                    {forensic.lagPathLanding && (
+                      <path d={forensic.lagPathLanding} fill="none" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="2 4" />
+                    )}
+                  </svg>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className={`rounded-2xl p-2 border ${liveLabGlassMode ? 'bg-white/20 border-white/30' : 'bg-slate-950/80 border-slate-800/80'}`}>
+                  <div className={`text-[10px] font-black uppercase tracking-wider mb-1 ${liveLabGlassMode ? 'text-white/85' : 'text-slate-300'}`}>
+                    Mapa de Regime
+                  </div>
+                  <svg viewBox={`0 0 ${forensic.width} 24`} className="w-full h-[40px] block rounded-lg">
+                    <rect x="0" y="0" width={forensic.width} height="24" fill="rgba(2,6,23,0.86)" />
+                    {forensic.phaseSegments.map((segment, index) => {
+                      const x = segment.startRatio * forensic.width;
+                      const w = Math.max(2, (segment.endRatio - segment.startRatio) * forensic.width);
+                      const color = segment.phase === 'trigger'
+                        ? '#f59e0b'
+                        : segment.phase === 'frame'
+                          ? '#f472b6'
+                          : segment.phase === 'landing'
+                            ? '#34d399'
+                            : '#94a3b8';
+                      return <rect key={index} x={x} y="4" width={w} height="16" rx="2" fill={color} />;
+                    })}
+                  </svg>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>T {forensic.phaseCounts.trigger}</span>
+                    <span>F {forensic.phaseCounts.frame}</span>
+                    <span>Q {forensic.phaseCounts.landing}</span>
+                    <span>M {forensic.phaseCounts.mixed}</span>
+                  </div>
+                </div>
+
+                <div className={`rounded-2xl p-2 border ${liveLabGlassMode ? 'bg-white/20 border-white/30' : 'bg-slate-950/80 border-slate-800/80'}`}>
+                  <div className={`text-[10px] font-black uppercase tracking-wider mb-1 ${liveLabGlassMode ? 'text-white/85' : 'text-slate-300'}`}>
+                    Top Eventos
+                  </div>
+                  <div className="space-y-1">
+                    {forensic.topEvents.slice(0, 5).map((event, index) => (
+                      <div
+                        key={index}
+                        className={`rounded-lg px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide flex items-center justify-between ${
+                          liveLabGlassMode ? 'bg-white/20 text-white border border-white/20' : 'bg-slate-800/80 text-slate-100 border border-slate-700'
+                        }`}
+                      >
+                        <span>#{event.drop} {event.side} {formatPreciseTimestamp(event.timestamp).split(' ')[1] ?? formatPreciseTimestamp(event.timestamp)}</span>
+                        <span>s {event.score.toFixed(2)} | e {event.error.toFixed(1)}px</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
