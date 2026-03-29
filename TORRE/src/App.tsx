@@ -611,6 +611,9 @@ export default function App() {
   }, []);
 
   const initGame = useCallback(() => {
+    const now = Date.now();
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+    const centerTargetX = (canvasRef.current?.width ?? viewportWidth) / 2;
     finalizeAutoTraceSession('reset');
     blocksRef.current = [];
     cameraYRef.current = 0;
@@ -620,11 +623,14 @@ export default function App() {
     setScore(0);
     setStability(100);
     setLastPrecision(null);
-    setAutoDropEnabled(false);
-    setAutoDropTargetX(null);
+    setAutoDropEnabled(true);
+    autoDropEnabledRef.current = true;
+    setAutoDropTargetX(centerTargetX);
+    autoDropTargetXRef.current = centerTargetX;
     setAutoTrace([]);
     autoTraceRef.current = [];
-    setAutoTraceStartedAt(null);
+    setAutoTraceStartedAt(now);
+    autoTraceStartedAtRef.current = now;
     tapTimestampsRef.current = [];
     lastAutoDropTimeRef.current = 0;
     prevSwingXRef.current = null;
@@ -854,62 +860,58 @@ export default function App() {
           if (block.y + block.height >= prevBlockY) {
             const landedOn = block.x + block.width > prevBlockX && block.x < prevBlockX + prevBlockWidth;
 
-            if (landedOn) {
-              block.y = prevBlockY - block.height;
-              block.isSettled = true;
-              block.vy = 0;
-              setScore(prev => prev + 1);
-              shakeRef.current = 5; // Impact shake
-              
-              const targetX = index === 0 ? canvas.width / 2 - block.width / 2 : blocksRef.current[index - 1].x;
-              const diff = Math.abs(block.x - targetX);
-              if (diff < 3) setLastPrecision('PERFECT');
-              else if (diff < 15) setLastPrecision('GOOD');
-              else setLastPrecision('BAD');
-
-              if ((autoDropEnabledRef.current && autoDropTargetXRef.current !== null) || pendingAutoTelemetryRef.current) {
-                const blockCenterX = block.x + block.width / 2;
-                const pending = pendingAutoTelemetryRef.current;
-                const targetX = pending?.targetX ?? autoDropTargetXRef.current ?? blockCenterX;
-                const error = blockCenterX - targetX;
-                const timestamp = Date.now();
-                const triggerError = pending?.triggerError ?? error;
-                const frameDeltaMs = pending?.frameDeltaMs ?? frameDeltaMsRef.current;
-                const frameBaselineMs = pending?.frameBaselineMs ?? frameBaselineMsRef.current;
-                const frameDriftMs = pending?.frameDriftMs ?? frameDriftMsRef.current;
-                setAutoTrace((prev) => {
-                  const next: AutoTracePoint[] = [
-                    ...prev,
-                    {
-                      drop: prev.length + 1,
-                      error,
-                      timestamp,
-                      blockCenterX,
-                      targetX,
-                      triggerError,
-                      landingShift: error - triggerError,
-                      frameDeltaMs,
-                      frameBaselineMs,
-                      frameDriftMs,
-                      triggerTimestamp: pending?.triggerTimestamp,
-                      triggerMode: pending?.triggerMode ?? 'manual',
-                    },
-                  ];
-                  autoTraceRef.current = next.slice(-AUTO_TRACE_MAX_POINTS);
-                  return next.slice(-AUTO_TRACE_MAX_POINTS);
-                });
-                pendingAutoTelemetryRef.current = null;
-              }
-
-              const currentStability = calculateStability();
-              if (currentStability <= 0) {
-                setGameState('FALLING');
-                shakeRef.current = 20; // Collapse shake
-              }
-            } else {
-              setGameState('FALLING');
-              shakeRef.current = 10; // Miss shake
+            if (!landedOn) {
+              block.x = Math.min(Math.max(block.x, prevBlockX), prevBlockX + prevBlockWidth - block.width);
             }
+
+            block.y = prevBlockY - block.height;
+            block.isSettled = true;
+            block.vy = 0;
+            setScore(prev => prev + 1);
+            shakeRef.current = landedOn ? 5 : 7;
+
+            const targetX = index === 0 ? canvas.width / 2 - block.width / 2 : blocksRef.current[index - 1].x;
+            const diff = Math.abs(block.x - targetX);
+            if (!landedOn) setLastPrecision('BAD');
+            else if (diff < 3) setLastPrecision('PERFECT');
+            else if (diff < 15) setLastPrecision('GOOD');
+            else setLastPrecision('BAD');
+
+            if ((autoDropEnabledRef.current && autoDropTargetXRef.current !== null) || pendingAutoTelemetryRef.current) {
+              const blockCenterX = block.x + block.width / 2;
+              const pending = pendingAutoTelemetryRef.current;
+              const targetX = pending?.targetX ?? autoDropTargetXRef.current ?? blockCenterX;
+              const error = blockCenterX - targetX;
+              const timestamp = Date.now();
+              const triggerError = pending?.triggerError ?? error;
+              const frameDeltaMs = pending?.frameDeltaMs ?? frameDeltaMsRef.current;
+              const frameBaselineMs = pending?.frameBaselineMs ?? frameBaselineMsRef.current;
+              const frameDriftMs = pending?.frameDriftMs ?? frameDriftMsRef.current;
+              setAutoTrace((prev) => {
+                const next: AutoTracePoint[] = [
+                  ...prev,
+                  {
+                    drop: prev.length + 1,
+                    error,
+                    timestamp,
+                    blockCenterX,
+                    targetX,
+                    triggerError,
+                    landingShift: error - triggerError,
+                    frameDeltaMs,
+                    frameBaselineMs,
+                    frameDriftMs,
+                    triggerTimestamp: pending?.triggerTimestamp,
+                    triggerMode: pending?.triggerMode ?? 'manual',
+                  },
+                ];
+                autoTraceRef.current = next.slice(-AUTO_TRACE_MAX_POINTS);
+                return next.slice(-AUTO_TRACE_MAX_POINTS);
+              });
+              pendingAutoTelemetryRef.current = null;
+            }
+
+            calculateStability();
           }
         }
       }
