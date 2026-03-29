@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { TowerControl as Tower, Brain, Target, ChevronRight, ChevronLeft, User } from "lucide-react";
 import TorreGame from "../TORRE/src/App.tsx";
@@ -68,31 +68,14 @@ const secretSignalGame: Game = {
   component: Torre2SinalGame,
 };
 
-const SECRET_SIGNAL_UNLOCK_KEY = "gamehub_torre2_sinal_unlocked_v1";
 const SECRET_MENU_TAP_WINDOW_MS = 1800;
 const SECRET_MENU_TAP_TARGET = 5;
 
 export default function App() {
   const [activeGameId, setActiveGameId] = useState<GameId | null>(null);
   const [isGameListOpen, setIsGameListOpen] = useState(false);
-  const [secretUnlocked, setSecretUnlocked] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.localStorage.getItem(SECRET_SIGNAL_UNLOCK_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
+  const [secretUnlocked, setSecretUnlocked] = useState(false);
   const hubTapTimesRef = useRef<number[]>([]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(SECRET_SIGNAL_UNLOCK_KEY, secretUnlocked ? "1" : "0");
-    } catch {
-      // Ignore storage write errors.
-    }
-  }, [secretUnlocked]);
 
   const menuGames = useMemo(() => (
     secretUnlocked || activeGameId === "torre2sinal"
