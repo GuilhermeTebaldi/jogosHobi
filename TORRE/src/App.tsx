@@ -297,6 +297,189 @@ export default function App() {
       dominantSignal,
     };
   }, [traceForView]);
+  const forensic = useMemo(() => {
+    const width = 220;
+    const height = 58;
+    const pad = 7;
+    const centerY = height / 2;
+    const baseY = height - pad;
+    const emptyResult = {
+      width,
+      height,
+      centerY,
+      baseY,
+      autoPath: '',
+      autoValuesCount: 0,
+      spectrumBars: [] as Array<{ x: number; y: number; h: number; w: number }>,
+      corrTrigger: 0,
+      corrFrame: 0,
+      corrLanding: 0,
+      flipRate: 0,
+      dominantLag: 0,
+      dominantLagCorr: 0,
+      peakPeriodDrops: 0,
+      peakFrequency: 0,
+      origin: null as 'trigger' | 'frame' | 'landing' | null,
+      originConfidence: 0,
+    };
+
+    if (traceForView.length < 4) {
+      return emptyResult;
+    }
+
+    const errors = traceForView.map((point) => point.error);
+    const triggerErrors = traceForView.map((point) => (
+      typeof point.triggerError === 'number' ? point.triggerError : point.error
+    ));
+    const frameDrifts = traceForView.map((point) => (
+      typeof point.frameDriftMs === 'number' ? point.frameDriftMs : 0
+    ));
+    const landingShifts = traceForView.map((point, index) => (
+      typeof point.landingShift === 'number' ? point.landingShift : errors[index] - triggerErrors[index]
+    ));
+
+    const mean = (values: number[]) => (
+      values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+    );
+    const std = (values: number[]) => {
+      if (values.length < 2) return 0;
+      const m = mean(values);
+      const variance = values.reduce((sum, value) => sum + (value - m) ** 2, 0) / values.length;
+      return Math.sqrt(variance);
+    };
+    const correlation = (a: number[], b: number[]) => {
+      const n = Math.min(a.length, b.length);
+      if (n < 2) return 0;
+      const aSlice = a.slice(0, n);
+      const bSlice = b.slice(0, n);
+      const meanA = mean(aSlice);
+      const meanB = mean(bSlice);
+      let num = 0;
+      let denA = 0;
+      let denB = 0;
+      for (let i = 0; i < n; i++) {
+        const da = aSlice[i] - meanA;
+        const db = bSlice[i] - meanB;
+        num += da * db;
+        denA += da * da;
+        denB += db * db;
+      }
+      const den = Math.sqrt(denA * denB);
+      if (den < 1e-9) return 0;
+      return num / den;
+    };
+
+    const centered = errors.map((value) => value - mean(errors));
+    const energy = centered.reduce((sum, value) => sum + value * value, 0);
+    const maxLag = Math.min(48, errors.length - 1);
+    const autoValues = [1];
+    for (let lag = 1; lag <= maxLag; lag++) {
+      let num = 0;
+      for (let i = 0; i < centered.length - lag; i++) {
+        num += centered[i] * centered[i + lag];
+      }
+      autoValues.push(energy > 1e-9 ? num / energy : 0);
+    }
+
+    const maxAbsAuto = Math.max(0.18, ...autoValues.map((value) => Math.abs(value)));
+    const autoPath = autoValues.map((value, index) => {
+      const ratio = autoValues.length <= 1 ? 1 : index / (autoValues.length - 1);
+      const x = pad + ratio * (width - pad * 2);
+      const y = centerY - (value / maxAbsAuto) * (centerY - pad);
+      return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`;
+    }).join(' ');
+
+    let dominantLag = 0;
+    let dominantLagCorr = 0;
+    for (let lag = 1; lag < autoValues.length; lag++) {
+      if (Math.abs(autoValues[lag]) > Math.abs(dominantLagCorr)) {
+        dominantLagCorr = autoValues[lag];
+        dominantLag = lag;
+      }
+    }
+
+    const n = centered.length;
+    const binsCount = Math.min(60, Math.floor(n / 2));
+    const bins: Array<{ k: number; amp: number }> = [];
+    for (let k = 1; k <= binsCount; k++) {
+      let re = 0;
+      let im = 0;
+      for (let t = 0; t < n; t++) {
+        const angle = (2 * Math.PI * k * t) / n;
+        re += centered[t] * Math.cos(angle);
+        im -= centered[t] * Math.sin(angle);
+      }
+      const amp = Math.sqrt(re * re + im * im) / n;
+      bins.push({ k, amp });
+    }
+
+    const maxAmp = Math.max(1e-9, ...bins.map((bin) => bin.amp));
+    const barStep = bins.length > 0 ? (width - pad * 2) / bins.length : 0;
+    const barWidth = Math.max(1.2, barStep * 0.72);
+    const spectrumBars = bins.map((bin, index) => {
+      const ampRatio = maxAmp > 0 ? bin.amp / maxAmp : 0;
+      const h = ampRatio * (height - pad * 2);
+      const x = pad + index * barStep + (barStep - barWidth) / 2;
+      const y = baseY - h;
+      return { x, y, h, w: barWidth };
+    });
+
+    const peakBin = bins.reduce(
+      (best, current) => (current.amp > best.amp ? current : best),
+      { k: 0, amp: 0 },
+    );
+    const peakFrequency = peakBin.k > 0 ? peakBin.k / n : 0;
+    const peakPeriodDrops = peakBin.k > 0 ? n / peakBin.k : 0;
+
+    let signTransitions = 0;
+    let signFlips = 0;
+    for (let i = 1; i < errors.length; i++) {
+      const a = Math.sign(errors[i - 1]);
+      const b = Math.sign(errors[i]);
+      if (a !== 0 && b !== 0) {
+        signTransitions += 1;
+        if (a !== b) signFlips += 1;
+      }
+    }
+    const flipRate = signTransitions > 0 ? signFlips / signTransitions : 0;
+
+    const corrTrigger = correlation(errors, triggerErrors);
+    const corrFrame = correlation(errors, frameDrifts);
+    const corrLanding = correlation(errors, landingShifts);
+    const stdErrors = Math.max(1e-6, std(errors));
+    const stdFrame = std(frameDrifts);
+    const stdLanding = std(landingShifts);
+
+    const scores = [
+      { id: 'trigger' as const, score: Math.abs(corrTrigger) * 1.25 + flipRate * 0.5 },
+      { id: 'frame' as const, score: Math.abs(corrFrame) * 1.2 + (stdFrame / stdErrors) * 0.5 },
+      { id: 'landing' as const, score: Math.abs(corrLanding) * 1.05 + (stdLanding / stdErrors) * 0.45 },
+    ].sort((a, b) => b.score - a.score);
+
+    const top = scores[0];
+    const second = scores[1];
+    const originConfidence = Math.max(0, Math.min(1, top.score - second.score));
+
+    return {
+      width,
+      height,
+      centerY,
+      baseY,
+      autoPath,
+      autoValuesCount: autoValues.length,
+      spectrumBars,
+      corrTrigger,
+      corrFrame,
+      corrLanding,
+      flipRate,
+      dominantLag,
+      dominantLagCorr,
+      peakPeriodDrops,
+      peakFrequency,
+      origin: top.id,
+      originConfidence,
+    };
+  }, [traceForView]);
   const showAutoPanel = autoDropEnabled || traceForView.length > 0;
   const latestTriggerValue = autoGraph.latest
     ? (typeof autoGraph.latest.triggerError === 'number' ? autoGraph.latest.triggerError : autoGraph.latest.error)
@@ -314,6 +497,13 @@ export default function App() {
   const captureModeLabel = captureMode ? 'Captura rapida' : 'Captura normal';
   const currentAutoCooldown = captureMode ? CAPTURE_AUTO_DROP_COOLDOWN_MS : AUTO_DROP_COOLDOWN_MS;
   const currentSpawnDelay = captureMode ? CAPTURE_SPAWN_DELAY_MS : NORMAL_SPAWN_DELAY_MS;
+  const forensicOriginLabel = forensic.origin === 'frame'
+    ? 'Tempo/frame'
+    : forensic.origin === 'landing'
+      ? 'Queda/colisao'
+      : forensic.origin === 'trigger'
+        ? 'Disparo/limiar'
+        : '--';
 
   const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
     const points = autoTraceRef.current;
@@ -380,13 +570,23 @@ export default function App() {
         avgTriggerPx: autoGraph.avgTrigger,
         avgLandingShiftPx: autoGraph.avgLanding,
         avgFrameDriftMs: autoGraph.avgFrame,
+        forensicOrigin: forensic.origin,
+        forensicOriginConfidence: forensic.originConfidence,
+        corrErrorTrigger: forensic.corrTrigger,
+        corrErrorFrame: forensic.corrFrame,
+        corrErrorLanding: forensic.corrLanding,
+        signFlipRate: forensic.flipRate,
+        dominantLagDrops: forensic.dominantLag,
+        dominantLagCorr: forensic.dominantLagCorr,
+        dominantPeriodDrops: forensic.peakPeriodDrops,
+        dominantFrequencyCyclesPerDrop: forensic.peakFrequency,
       },
       points: traceForView,
     };
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.origin, forensic.originConfidence, forensic.peakFrequency, forensic.peakPeriodDrops, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -412,6 +612,16 @@ export default function App() {
         avgTriggerPx: autoGraph.avgTrigger,
         avgLandingShiftPx: autoGraph.avgLanding,
         avgFrameDriftMs: autoGraph.avgFrame,
+        forensicOrigin: forensic.origin,
+        forensicOriginConfidence: forensic.originConfidence,
+        corrErrorTrigger: forensic.corrTrigger,
+        corrErrorFrame: forensic.corrFrame,
+        corrErrorLanding: forensic.corrLanding,
+        signFlipRate: forensic.flipRate,
+        dominantLagDrops: forensic.dominantLag,
+        dominantLagCorr: forensic.dominantLagCorr,
+        dominantPeriodDrops: forensic.peakPeriodDrops,
+        dominantFrequencyCyclesPerDrop: forensic.peakFrequency,
       },
       points: traceForView,
     };
@@ -422,7 +632,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.origin, forensic.originConfidence, forensic.peakFrequency, forensic.peakPeriodDrops, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -551,6 +761,9 @@ export default function App() {
     ctx.fillText(`Frame drift: ${latestFrame.toFixed(2)}ms`, 910, 668);
     ctx.fillText(`Sinal dominante: ${autoGraph.dominantSignal ?? '--'}`, 90, 668);
     ctx.fillText(`Modo captura: ${captureMode ? 'ON' : 'OFF'}`, 300, 668);
+    ctx.fillText(`Origem provavel: ${forensicOriginLabel}`, 90, 636);
+    ctx.fillText(`Corr D/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, 300, 636);
+    ctx.fillText(`Periodo dominante: ${forensic.peakPeriodDrops > 0 ? `${forensic.peakPeriodDrops.toFixed(1)} drops` : '--'}`, 910, 636);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -560,7 +773,7 @@ export default function App() {
     link.click();
     link.remove();
     setNotice('Cartaz baixado');
-  }, [activeTraceStartedAt, autoGraph.dominantSignal, captureMode, setNotice, traceForView]);
+  }, [activeTraceStartedAt, autoGraph.dominantSignal, captureMode, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.peakPeriodDrops, forensicOriginLabel, setNotice, traceForView]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1255,6 +1468,93 @@ export default function App() {
               </div>
               <div className="text-slate-600">
                 Ultimo ponto: {autoGraph.latest ? formatPreciseTimestamp(autoGraph.latest.timestamp) : '--'}
+              </div>
+            </div>
+
+            <div className="mt-2.5">
+              <div className="flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wide text-slate-600">
+                <span>Autocorrelacao</span>
+                <span>
+                  lag {forensic.dominantLag || '--'} | r {forensic.dominantLagCorr.toFixed(2)}
+                </span>
+              </div>
+              <svg width={forensic.width} height={forensic.height} className="mt-1 block rounded-lg bg-slate-950/90">
+                <line
+                  x1="0"
+                  y1={forensic.centerY}
+                  x2={forensic.width}
+                  y2={forensic.centerY}
+                  stroke="rgba(255,255,255,0.24)"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
+                {forensic.autoPath && (
+                  <path
+                    d={forensic.autoPath}
+                    fill="none"
+                    stroke="#34d399"
+                    strokeWidth="1.9"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                )}
+              </svg>
+            </div>
+
+            <div className="mt-2.5">
+              <div className="flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wide text-slate-600">
+                <span>Espectro</span>
+                <span>
+                  periodo {forensic.peakPeriodDrops > 0 ? `${forensic.peakPeriodDrops.toFixed(1)} drops` : '--'}
+                </span>
+              </div>
+              <svg width={forensic.width} height={forensic.height} className="mt-1 block rounded-lg bg-slate-950/90">
+                <line
+                  x1="0"
+                  y1={forensic.baseY}
+                  x2={forensic.width}
+                  y2={forensic.baseY}
+                  stroke="rgba(255,255,255,0.2)"
+                  strokeWidth="1"
+                />
+                {forensic.spectrumBars.map((bar, index) => (
+                  <rect
+                    key={index}
+                    x={bar.x}
+                    y={bar.y}
+                    width={bar.w}
+                    height={Math.max(0.6, bar.h)}
+                    fill="#38bdf8"
+                    opacity={0.85}
+                  />
+                ))}
+              </svg>
+            </div>
+
+            <div className="mt-2 text-[9px] font-extrabold uppercase tracking-wide text-slate-600 space-y-1">
+              <div className="flex items-center justify-between">
+                <span>Origem provavel</span>
+                <span>{forensicOriginLabel}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Confianca</span>
+                <span>{(forensic.originConfidence * 100).toFixed(0)}%</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Corr erro/disparo</span>
+                <span>{forensic.corrTrigger.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Corr erro/frame</span>
+                <span>{forensic.corrFrame.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Corr erro/queda</span>
+                <span>{forensic.corrLanding.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Troca de lado</span>
+                <span>{(forensic.flipRate * 100).toFixed(0)}%</span>
               </div>
             </div>
 
