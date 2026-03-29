@@ -1,12 +1,13 @@
-import { useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentType, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { TowerControl as Tower, Brain, Target, ChevronRight, ChevronLeft, User } from "lucide-react";
 import TorreGame from "../TORRE/src/App.tsx";
+import Torre2SinalGame from "../TORRE2SINAL/src/App.tsx";
 import ReflexoGame from "../4-5-6REFLEXO/src/App.tsx";
 import CorAlvoGame from "../CorAlvo/src/App.tsx";
 import ImpostorGame from "../IMPOSTOR/src/App.tsx";
 
-type GameId = "impostor" | "coralvo" | "memoria" | "torre";
+type GameId = "impostor" | "coralvo" | "memoria" | "torre" | "torre2sinal";
 
 interface Game {
   id: GameId;
@@ -18,7 +19,7 @@ interface Game {
   component: ComponentType;
 }
 
-const games: Game[] = [
+const publicGames: Game[] = [
   {
     id: "impostor",
     title: "IMPOSTOR",
@@ -57,20 +58,103 @@ const games: Game[] = [
   },
 ];
 
+const secretSignalGame: Game = {
+  id: "torre2sinal",
+  title: "TORRE 2 SINAL",
+  description: "Modo oculto de análise forense com telemetria avançada e cartaz técnico em alta qualidade.",
+  image: "https://i.pinimg.com/736x/03/ae/ea/03aeea01ff701ac443319759a062f160.jpg",
+  color: "from-cyan-600/80 to-black",
+  icon: <Tower size={24} />,
+  component: Torre2SinalGame,
+};
+
+const SECRET_SIGNAL_UNLOCK_KEY = "gamehub_torre2_sinal_unlocked_v1";
+const SECRET_TAP_WINDOW_MS = 1300;
+const SECRET_PULL_ARM_MS = 8000;
+const SECRET_PULL_DISTANCE_PX = 70;
+
 export default function App() {
   const [activeGameId, setActiveGameId] = useState<GameId | null>(null);
   const [isGameListOpen, setIsGameListOpen] = useState(false);
+  const [secretUnlocked, setSecretUnlocked] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(SECRET_SIGNAL_UNLOCK_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [secretSwipeArmed, setSecretSwipeArmed] = useState(false);
+  const [secretSwipeCount, setSecretSwipeCount] = useState(0);
+  const menuTapTimesRef = useRef<number[]>([]);
+  const swipeStartYRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(SECRET_SIGNAL_UNLOCK_KEY, secretUnlocked ? "1" : "0");
+    } catch {
+      // Ignore storage write errors.
+    }
+  }, [secretUnlocked]);
+
+  useEffect(() => {
+    if (!secretSwipeArmed) return;
+    const timer = window.setTimeout(() => {
+      setSecretSwipeArmed(false);
+      setSecretSwipeCount(0);
+    }, SECRET_PULL_ARM_MS);
+    return () => window.clearTimeout(timer);
+  }, [secretSwipeArmed]);
+
+  const menuGames = useMemo(() => (
+    secretUnlocked || activeGameId === "torre2sinal"
+      ? [...publicGames, secretSignalGame]
+      : publicGames
+  ), [activeGameId, secretUnlocked]);
 
   const activeGame = useMemo(
-    () => games.find((game) => game.id === activeGameId) ?? null,
-    [activeGameId],
+    () => menuGames.find((game) => game.id === activeGameId) ?? null,
+    [activeGameId, menuGames],
   );
 
   const ActiveGameComponent = activeGame?.component;
   const isGameOpen = activeGameId !== null;
   const openGame = (gameId: GameId | null) => {
+    if (gameId === "torre2sinal" && !secretUnlocked) return;
     setActiveGameId(gameId);
     setIsGameListOpen(false);
+  };
+  const handleMenuToggle = () => {
+    const now = Date.now();
+    const recent = menuTapTimesRef.current.filter((timestamp) => now - timestamp <= SECRET_TAP_WINDOW_MS);
+    recent.push(now);
+    menuTapTimesRef.current = recent;
+    if (recent.length >= 3 && !secretUnlocked) {
+      setSecretSwipeArmed(true);
+      setSecretSwipeCount(0);
+    }
+    setIsGameListOpen((prev) => !prev);
+  };
+  const handleSecretPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!secretSwipeArmed || secretUnlocked) return;
+    swipeStartYRef.current = event.clientY;
+  };
+  const handleSecretPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!secretSwipeArmed || secretUnlocked) return;
+    const startY = swipeStartYRef.current;
+    swipeStartYRef.current = null;
+    if (startY === null) return;
+    const deltaY = event.clientY - startY;
+    if (deltaY < SECRET_PULL_DISTANCE_PX) return;
+    setSecretSwipeCount((prev) => {
+      const next = prev + 1;
+      if (next >= 2) {
+        setSecretUnlocked(true);
+        setSecretSwipeArmed(false);
+      }
+      return next;
+    });
   };
 
   return (
@@ -79,7 +163,7 @@ export default function App() {
         <>
           <button
             type="button"
-            onClick={() => setIsGameListOpen((prev) => !prev)}
+            onClick={handleMenuToggle}
             className="fixed top-4 left-3 z-[120] w-10 h-10 rounded-full border border-white/20 bg-black/70 backdrop-blur-xl flex items-center justify-center"
             aria-label="Abrir lista de jogos"
           >
@@ -97,11 +181,26 @@ export default function App() {
             />
 
             <aside
+              onPointerDown={handleSecretPointerDown}
+              onPointerUp={handleSecretPointerUp}
+              onPointerCancel={() => {
+                swipeStartYRef.current = null;
+              }}
               className={`absolute top-0 left-0 h-full w-72 max-w-[86vw] bg-black/92 border-r border-white/15 backdrop-blur-xl p-4 pt-20 transition-transform duration-200 ${
                 isGameListOpen ? "translate-x-0" : "-translate-x-full"
               }`}
             >
               <p className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Lista de Jogos</p>
+              {secretSwipeArmed && !secretUnlocked && (
+                <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-cyan-300">
+                  Modo oculto: arraste para baixo {Math.max(0, 2 - secretSwipeCount)}x
+                </p>
+              )}
+              {secretUnlocked && (
+                <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-emerald-300">
+                  Torre 2 Sinal liberado
+                </p>
+              )}
               <div className="mt-4 flex flex-col gap-2">
                 <button
                   onClick={() => openGame(null)}
@@ -109,7 +208,7 @@ export default function App() {
                 >
                   Voltar ao Hub
                 </button>
-                {games.map((game) => (
+                {menuGames.map((game) => (
                   <button
                     key={game.id}
                     onClick={() => openGame(game.id)}
@@ -148,7 +247,7 @@ export default function App() {
               >
                 Hub
               </button>
-              {games.map((game) => (
+              {publicGames.map((game) => (
                 <button
                   key={game.id}
                   onClick={() => openGame(game.id)}
@@ -188,7 +287,7 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-              {games.map((game, index) => (
+              {publicGames.map((game, index) => (
                 <motion.button
                   key={game.id}
                   type="button"

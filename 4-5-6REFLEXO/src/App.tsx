@@ -93,7 +93,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-[100dvh] w-screen bg-[#f0f4f8] flex flex-col font-sans text-slate-800 overflow-hidden fixed inset-0 touch-none select-none">
+    <div className="h-[100dvh] w-screen bg-[#f0f4f8] flex flex-col font-sans text-slate-800 overflow-hidden fixed inset-0 touch-manipulation select-none">
       {/* Top Bar */}
       <header className="h-12 bg-white/80 backdrop-blur-md border-b border-slate-200 z-50 flex items-center justify-between px-6 flex-shrink-0">
         {gameState !== 'idle' ? (
@@ -251,7 +251,7 @@ export default function App() {
 
                 <button 
                   onClick={startGame}
-                  className="group relative w-full flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-10 py-5 rounded-3xl font-black text-xl transition-all hover:scale-[1.02] active:scale-95 shadow-xl shadow-blue-100"
+                  className="group relative w-full flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white px-10 py-5 rounded-3xl font-black text-xl transition-all hover:scale-[1.02] active:scale-95 shadow-xl shadow-blue-100 touch-manipulation"
                 >
                   <Play className="fill-current" size={24} />
                   INICIAR JOGO
@@ -309,7 +309,7 @@ export default function App() {
                 <button 
                   onClick={checkNumber}
                   disabled={userInput.length < numDigits}
-                  className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-black disabled:bg-slate-200 text-white py-4 rounded-2xl font-bold transition-all"
+                  className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-black disabled:bg-slate-200 text-white py-4 rounded-2xl font-bold transition-all touch-manipulation"
                 >
                   <Eye size={20} />
                   CONFERIR NÚMERO
@@ -361,7 +361,7 @@ export default function App() {
 
                 <button 
                   onClick={startGame}
-                  className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold transition-all shadow-lg shadow-blue-100"
+                  className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold transition-all shadow-lg shadow-blue-100 touch-manipulation"
                 >
                   <RotateCcw size={20} />
                   JOGAR NOVAMENTE
