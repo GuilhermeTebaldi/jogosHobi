@@ -29,6 +29,13 @@ interface AutoTracePoint {
   timestamp: number;
   blockCenterX: number;
   targetX: number;
+  triggerError?: number;
+  landingShift?: number;
+  frameDeltaMs?: number;
+  frameBaselineMs?: number;
+  frameDriftMs?: number;
+  triggerTimestamp?: number;
+  triggerMode?: 'crossed' | 'near' | 'manual';
 }
 
 interface AutoTraceSession {
@@ -38,6 +45,16 @@ interface AutoTraceSession {
   reason: 'manual_off' | 'reset' | 'game_over';
   targetX: number;
   points: AutoTracePoint[];
+}
+
+interface PendingAutoTelemetry {
+  targetX: number;
+  triggerError: number;
+  frameDeltaMs: number;
+  frameBaselineMs: number;
+  frameDriftMs: number;
+  triggerTimestamp: number;
+  triggerMode: 'crossed' | 'near' | 'manual';
 }
 
 const BLOCK_SIZE = 60;
@@ -125,22 +142,61 @@ export default function App() {
   const tapTimestampsRef = useRef<number[]>([]);
   const lastAutoDropTimeRef = useRef(0);
   const prevSwingXRef = useRef<number | null>(null);
+  const pendingAutoTelemetryRef = useRef<PendingAutoTelemetry | null>(null);
+  const lastFrameTimeRef = useRef<number | null>(null);
+  const frameDeltaMsRef = useRef(16.7);
+  const frameBaselineMsRef = useRef(16.7);
+  const frameDriftMsRef = useRef(0);
   useEffect(() => { autoDropEnabledRef.current = autoDropEnabled; }, [autoDropEnabled]);
   useEffect(() => { autoDropTargetXRef.current = autoDropTargetX; }, [autoDropTargetX]);
   useEffect(() => { autoTraceRef.current = autoTrace; }, [autoTrace]);
   useEffect(() => { autoTraceStartedAtRef.current = autoTraceStartedAt; }, [autoTraceStartedAt]);
+
+  const lastStoredSession = autoTraceSessions.length > 0 ? autoTraceSessions[0] : null;
+  const traceForView = autoTrace.length > 0 ? autoTrace : (lastStoredSession?.points ?? []);
+  const activeTraceStartedAt = autoTrace.length > 0 ? autoTraceStartedAt : (lastStoredSession?.startedAt ?? null);
+  const activeTraceTargetX = autoTrace.length > 0 ? autoDropTargetX : (lastStoredSession?.targetX ?? null);
 
   const autoGraph = useMemo(() => {
     const width = 220;
     const height = 112;
     const pad = 10;
     const centerY = height / 2;
-    const maxAbsError = Math.max(12, ...autoTrace.map((point) => Math.abs(point.error)));
+    const readTriggerError = (point: AutoTracePoint) => (
+      typeof point.triggerError === 'number' ? point.triggerError : point.error
+    );
+    const readFrameDrift = (point: AutoTracePoint) => (
+      typeof point.frameDriftMs === 'number' ? point.frameDriftMs : 0
+    );
+    const readLandingShift = (point: AutoTracePoint) => (
+      typeof point.landingShift === 'number' ? point.landingShift : point.error - readTriggerError(point)
+    );
+    const toPath = (values: number[], maxAbs: number) => values
+      .map((value, index) => {
+        const ratio = values.length <= 1 ? 1 : index / (values.length - 1);
+        const x = pad + ratio * (width - pad * 2);
+        const y = centerY - (value / maxAbs) * (centerY - pad);
+        return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(' ');
+    const meanAbs = (values: number[]) => {
+      if (values.length === 0) return 0;
+      return values.reduce((sum, value) => sum + Math.abs(value), 0) / values.length;
+    };
 
-    const points = autoTrace.map((point, index) => {
-      const ratio = autoTrace.length <= 1 ? 1 : index / (autoTrace.length - 1);
+    const finalErrors = traceForView.map((point) => point.error);
+    const triggerErrors = traceForView.map(readTriggerError);
+    const frameDrifts = traceForView.map(readFrameDrift);
+    const landingShifts = traceForView.map(readLandingShift);
+
+    const maxAbsError = Math.max(12, ...finalErrors.map((value) => Math.abs(value)));
+    const maxAbsTrigger = Math.max(12, ...triggerErrors.map((value) => Math.abs(value)));
+    const maxAbsFrame = Math.max(2.5, ...frameDrifts.map((value) => Math.abs(value)));
+
+    const points = finalErrors.map((error, index) => {
+      const ratio = finalErrors.length <= 1 ? 1 : index / (finalErrors.length - 1);
       const x = pad + ratio * (width - pad * 2);
-      const y = centerY - (point.error / maxAbsError) * (centerY - pad);
+      const y = centerY - (error / maxAbsError) * (centerY - pad);
       return { x, y };
     });
 
@@ -148,25 +204,62 @@ export default function App() {
       .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
       .join(' ');
 
+    const triggerPath = toPath(triggerErrors, maxAbsTrigger);
+    const framePath = toPath(frameDrifts, maxAbsFrame);
+    const avgTrigger = meanAbs(triggerErrors);
+    const avgLanding = meanAbs(landingShifts);
+    const avgFrame = meanAbs(frameDrifts);
+
+    let dominantSignal: 'trigger' | 'landing' | 'frame' | null = null;
+    if (traceForView.length > 0) {
+      const ranking = [
+        { id: 'trigger' as const, value: avgTrigger / 10 },
+        { id: 'landing' as const, value: avgLanding / 10 },
+        { id: 'frame' as const, value: avgFrame / 3 },
+      ];
+      ranking.sort((a, b) => b.value - a.value);
+      dominantSignal = ranking[0].id;
+    }
+
     return {
       width,
       height,
       centerY,
       maxAbsError,
+      maxAbsTrigger,
+      maxAbsFrame,
       path,
+      triggerPath,
+      framePath,
       points,
-      latest: autoTrace.length > 0 ? autoTrace[autoTrace.length - 1] : null,
+      latest: traceForView.length > 0 ? traceForView[traceForView.length - 1] : null,
+      avgTrigger,
+      avgLanding,
+      avgFrame,
+      dominantSignal,
     };
-  }, [autoTrace]);
-  const showAutoPanel = autoDropEnabled || autoTrace.length > 0;
-  const lastStoredSession = autoTraceSessions.length > 0 ? autoTraceSessions[0] : null;
+  }, [traceForView]);
+  const showAutoPanel = autoDropEnabled || traceForView.length > 0;
+  const latestTriggerValue = autoGraph.latest
+    ? (typeof autoGraph.latest.triggerError === 'number' ? autoGraph.latest.triggerError : autoGraph.latest.error)
+    : null;
+  const latestFrameDriftValue = autoGraph.latest && typeof autoGraph.latest.frameDriftMs === 'number'
+    ? autoGraph.latest.frameDriftMs
+    : null;
+  const dominantSignalLabel = autoGraph.dominantSignal === 'frame'
+    ? 'Frame/tempo'
+    : autoGraph.dominantSignal === 'landing'
+      ? 'Queda/fisica'
+      : autoGraph.dominantSignal === 'trigger'
+        ? 'Disparo auto'
+        : '--';
 
   const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
     const points = autoTraceRef.current;
     const startedAt = autoTraceStartedAtRef.current;
     const targetX = autoDropTargetXRef.current;
 
-    if (!startedAt || !targetX || points.length === 0) {
+    if (startedAt === null || targetX === null || points.length === 0) {
       setAutoTraceStartedAt(null);
       return;
     }
@@ -202,7 +295,7 @@ export default function App() {
   }, []);
 
   const handleDownloadJson = useCallback(() => {
-    if (autoTrace.length === 0) {
+    if (traceForView.length === 0) {
       setNotice('Sem dados para baixar');
       return;
     }
@@ -210,18 +303,25 @@ export default function App() {
     const payload = {
       exportedAt: Date.now(),
       exportedAtFormatted: formatPreciseTimestamp(Date.now()),
-      startedAt: autoTraceStartedAt,
-      startedAtFormatted: autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : null,
-      targetX: autoDropTargetX,
-      points: autoTrace,
+      source: autoTrace.length > 0 ? 'active' : 'stored_session',
+      startedAt: activeTraceStartedAt,
+      startedAtFormatted: activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : null,
+      targetX: activeTraceTargetX,
+      dominantSignal: autoGraph.dominantSignal,
+      summary: {
+        avgTriggerPx: autoGraph.avgTrigger,
+        avgLandingShiftPx: autoGraph.avgLanding,
+        avgFrameDriftMs: autoGraph.avgFrame,
+      },
+      points: traceForView,
     };
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [autoTrace, autoTraceStartedAt, autoDropTargetX, downloadTextFile, setNotice]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, downloadTextFile, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
-    if (autoTrace.length === 0) {
+    if (traceForView.length === 0) {
       setNotice('Sem dados para copiar');
       return;
     }
@@ -229,10 +329,17 @@ export default function App() {
     const payload = {
       copiedAt: Date.now(),
       copiedAtFormatted: formatPreciseTimestamp(Date.now()),
-      startedAt: autoTraceStartedAt,
-      startedAtFormatted: autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : null,
-      targetX: autoDropTargetX,
-      points: autoTrace,
+      source: autoTrace.length > 0 ? 'active' : 'stored_session',
+      startedAt: activeTraceStartedAt,
+      startedAtFormatted: activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : null,
+      targetX: activeTraceTargetX,
+      dominantSignal: autoGraph.dominantSignal,
+      summary: {
+        avgTriggerPx: autoGraph.avgTrigger,
+        avgLandingShiftPx: autoGraph.avgLanding,
+        avgFrameDriftMs: autoGraph.avgFrame,
+      },
+      points: traceForView,
     };
 
     try {
@@ -241,13 +348,20 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [autoTrace, autoTraceStartedAt, autoDropTargetX, setNotice]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
-    if (autoTrace.length < 2) {
+    if (traceForView.length < 2) {
       setNotice('Dados insuficientes para cartaz');
       return;
     }
+
+    const readTriggerError = (point: AutoTracePoint) => (
+      typeof point.triggerError === 'number' ? point.triggerError : point.error
+    );
+    const readFrameDrift = (point: AutoTracePoint) => (
+      typeof point.frameDriftMs === 'number' ? point.frameDriftMs : 0
+    );
 
     const width = 1200;
     const height = 800;
@@ -256,7 +370,9 @@ export default function App() {
     const chartWidth = 1020;
     const chartHeight = 470;
     const centerY = chartTop + chartHeight / 2;
-    const maxAbsError = Math.max(12, ...autoTrace.map((point) => Math.abs(point.error)));
+    const maxAbsError = Math.max(12, ...traceForView.map((point) => Math.abs(point.error)));
+    const maxAbsTrigger = Math.max(12, ...traceForView.map((point) => Math.abs(readTriggerError(point))));
+    const maxAbsFrame = Math.max(2.5, ...traceForView.map((point) => Math.abs(readFrameDrift(point))));
 
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -279,8 +395,8 @@ export default function App() {
 
     ctx.fillStyle = '#94a3b8';
     ctx.font = '600 21px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(`Inicio: ${autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : '--'}`, 90, 116);
-    ctx.fillText(`Ultimo ponto: ${formatPreciseTimestamp(autoTrace[autoTrace.length - 1].timestamp)}`, 90, 144);
+    ctx.fillText(`Inicio: ${activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : '--'}`, 90, 116);
+    ctx.fillText(`Ultimo ponto: ${formatPreciseTimestamp(traceForView[traceForView.length - 1].timestamp)}`, 90, 144);
 
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
     ctx.lineWidth = 2;
@@ -294,35 +410,72 @@ export default function App() {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.beginPath();
-    autoTrace.forEach((point, index) => {
-      const ratio = autoTrace.length <= 1 ? 1 : index / (autoTrace.length - 1);
-      const x = chartLeft + ratio * chartWidth;
-      const y = centerY - (point.error / maxAbsError) * (chartHeight / 2 - 18);
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 3.5;
-    ctx.stroke();
-
-    ctx.fillStyle = '#22d3ee';
-    autoTrace.forEach((point, index) => {
-      const ratio = autoTrace.length <= 1 ? 1 : index / (autoTrace.length - 1);
-      const x = chartLeft + ratio * chartWidth;
-      const y = centerY - (point.error / maxAbsError) * (chartHeight / 2 - 18);
+    const drawSeries = (
+      values: number[],
+      maxAbs: number,
+      color: string,
+      widthPx: number,
+      dashed: number[] = [],
+      withDots = false,
+    ) => {
+      if (values.length === 0) return;
       ctx.beginPath();
-      ctx.arc(x, y, 2.4, 0, Math.PI * 2);
-      ctx.fill();
-    });
+      values.forEach((value, index) => {
+        const ratio = values.length <= 1 ? 1 : index / (values.length - 1);
+        const x = chartLeft + ratio * chartWidth;
+        const y = centerY - (value / maxAbs) * (chartHeight / 2 - 18);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = widthPx;
+      ctx.setLineDash(dashed);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (!withDots) return;
+      ctx.fillStyle = color;
+      values.forEach((value, index) => {
+        const ratio = values.length <= 1 ? 1 : index / (values.length - 1);
+        const x = chartLeft + ratio * chartWidth;
+        const y = centerY - (value / maxAbs) * (chartHeight / 2 - 18);
+        ctx.beginPath();
+        ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    };
 
-    const latest = autoTrace[autoTrace.length - 1];
+    drawSeries(traceForView.map((point) => point.error), maxAbsError, '#22d3ee', 3.2, [], true);
+    drawSeries(traceForView.map(readTriggerError), maxAbsTrigger, '#f59e0b', 2.3, [7, 5]);
+    drawSeries(traceForView.map(readFrameDrift), maxAbsFrame, '#f472b6', 2, [2, 5]);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '700 18px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillRect(90, 728, 18, 4);
+    ctx.fillStyle = '#22d3ee';
+    ctx.fillRect(90, 728, 18, 4);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('Erro final', 114, 734);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(246, 728, 18, 4);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('Erro no disparo', 270, 734);
+    ctx.fillStyle = '#f472b6';
+    ctx.fillRect(444, 728, 18, 4);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('Drift de frame', 468, 734);
+
+    const latest = traceForView[traceForView.length - 1];
+    const latestTrigger = typeof latest.triggerError === 'number' ? latest.triggerError : latest.error;
+    const latestFrame = typeof latest.frameDriftMs === 'number' ? latest.frameDriftMs : 0;
     ctx.fillStyle = '#e2e8f0';
     ctx.font = '700 20px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(`Pontos: ${autoTrace.length}`, 90, 700);
+    ctx.fillText(`Pontos: ${traceForView.length}`, 90, 700);
     ctx.fillText(`Escala: ±${maxAbsError.toFixed(1)}px`, 300, 700);
-    ctx.fillText(`Desvio atual: ${latest.error.toFixed(1)}px`, 560, 700);
+    ctx.fillText(`Erro final: ${latest.error.toFixed(1)}px`, 560, 700);
     ctx.fillText(`Alvo X: ${latest.targetX.toFixed(1)}px`, 910, 700);
+    ctx.fillText(`Disparo: ${latestTrigger.toFixed(1)}px`, 560, 668);
+    ctx.fillText(`Frame drift: ${latestFrame.toFixed(2)}ms`, 910, 668);
+    ctx.fillText(`Sinal dominante: ${autoGraph.dominantSignal ?? '--'}`, 90, 668);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -332,7 +485,7 @@ export default function App() {
     link.click();
     link.remove();
     setNotice('Cartaz baixado');
-  }, [autoTrace, autoTraceStartedAt, setNotice]);
+  }, [activeTraceStartedAt, autoGraph.dominantSignal, setNotice, traceForView]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -383,6 +536,11 @@ export default function App() {
     tapTimestampsRef.current = [];
     lastAutoDropTimeRef.current = 0;
     prevSwingXRef.current = null;
+    pendingAutoTelemetryRef.current = null;
+    lastFrameTimeRef.current = null;
+    frameDeltaMsRef.current = 16.7;
+    frameBaselineMsRef.current = 16.7;
+    frameDriftMsRef.current = 0;
     shakeRef.current = 0;
     setGameState('PLAYING');
     setShowTutorial(true);
@@ -442,6 +600,7 @@ export default function App() {
         setAutoTraceStartedAt(null);
         tapTimestampsRef.current = [];
         prevSwingXRef.current = null;
+        pendingAutoTelemetryRef.current = null;
       }
       return;
     }
@@ -457,9 +616,11 @@ export default function App() {
       tapTimestampsRef.current = [];
       lastAutoDropTimeRef.current = 0;
       prevSwingXRef.current = null;
+      pendingAutoTelemetryRef.current = null;
       return;
     }
 
+    pendingAutoTelemetryRef.current = null;
     dropBlock();
   }, [dropBlock, finalizeAutoTraceSession]);
 
@@ -469,6 +630,7 @@ export default function App() {
       setAutoDropEnabled(false);
       setAutoDropTargetX(null);
       setAutoTraceStartedAt(null);
+      pendingAutoTelemetryRef.current = null;
     }
   }, [gameState, finalizeAutoTraceSession]);
 
@@ -516,6 +678,15 @@ export default function App() {
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    if (lastFrameTimeRef.current !== null) {
+      const rawDelta = time - lastFrameTimeRef.current;
+      const delta = Math.max(0, Math.min(rawDelta, 100));
+      frameDeltaMsRef.current = delta;
+      frameBaselineMsRef.current = frameBaselineMsRef.current * 0.92 + delta * 0.08;
+      frameDriftMsRef.current = delta - frameBaselineMsRef.current;
+    }
+    lastFrameTimeRef.current = time;
 
     const currentState = gameStateRef.current;
 
@@ -603,11 +774,16 @@ export default function App() {
               else if (diff < 15) setLastPrecision('GOOD');
               else setLastPrecision('BAD');
 
-              if (autoDropEnabledRef.current && autoDropTargetXRef.current !== null) {
+              if ((autoDropEnabledRef.current && autoDropTargetXRef.current !== null) || pendingAutoTelemetryRef.current) {
                 const blockCenterX = block.x + block.width / 2;
-                const targetX = autoDropTargetXRef.current;
+                const pending = pendingAutoTelemetryRef.current;
+                const targetX = pending?.targetX ?? autoDropTargetXRef.current ?? blockCenterX;
                 const error = blockCenterX - targetX;
                 const timestamp = Date.now();
+                const triggerError = pending?.triggerError ?? error;
+                const frameDeltaMs = pending?.frameDeltaMs ?? frameDeltaMsRef.current;
+                const frameBaselineMs = pending?.frameBaselineMs ?? frameBaselineMsRef.current;
+                const frameDriftMs = pending?.frameDriftMs ?? frameDriftMsRef.current;
                 setAutoTrace((prev) => {
                   const next: AutoTracePoint[] = [
                     ...prev,
@@ -617,11 +793,19 @@ export default function App() {
                       timestamp,
                       blockCenterX,
                       targetX,
+                      triggerError,
+                      landingShift: error - triggerError,
+                      frameDeltaMs,
+                      frameBaselineMs,
+                      frameDriftMs,
+                      triggerTimestamp: pending?.triggerTimestamp,
+                      triggerMode: pending?.triggerMode ?? 'manual',
                     },
                   ];
                   autoTraceRef.current = next.slice(-AUTO_TRACE_MAX_POINTS);
                   return next.slice(-AUTO_TRACE_MAX_POINTS);
                 });
+                pendingAutoTelemetryRef.current = null;
               }
 
               const currentStability = calculateStability();
@@ -731,6 +915,15 @@ export default function App() {
 
         if ((crossedTarget || nearTarget) && now - lastAutoDropTimeRef.current > AUTO_DROP_COOLDOWN_MS) {
           lastAutoDropTimeRef.current = now;
+          pendingAutoTelemetryRef.current = {
+            targetX,
+            triggerError: x - targetX,
+            frameDeltaMs: frameDeltaMsRef.current,
+            frameBaselineMs: frameBaselineMsRef.current,
+            frameDriftMs: frameDriftMsRef.current,
+            triggerTimestamp: now,
+            triggerMode: crossedTarget ? 'crossed' : 'near',
+          };
           dropBlock();
           autoDroppedThisFrame = true;
         }
@@ -860,13 +1053,13 @@ export default function App() {
 
       {showAutoPanel && (
         <div className="absolute left-3 bottom-4 z-[80] pointer-events-none">
-          <div className="w-[250px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3 pointer-events-auto">
+          <div className="w-[268px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3 pointer-events-auto">
             <div className="flex items-center justify-between mb-2">
               <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700">
-                {autoDropEnabled ? 'Auto Ligado' : 'Ultima Captura'}
+                {autoDropEnabled ? 'Auto Ligado' : autoTrace.length > 0 ? 'Ultima Captura' : 'Sessao Salva'}
               </p>
               <p className="text-[10px] font-bold text-slate-500">
-                {autoTrace.length} blocos
+                {traceForView.length} blocos
               </p>
             </div>
 
@@ -890,6 +1083,28 @@ export default function App() {
                   strokeLinejoin="round"
                 />
               )}
+              {autoGraph.triggerPath && (
+                <path
+                  d={autoGraph.triggerPath}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray="5 4"
+                />
+              )}
+              {autoGraph.framePath && (
+                <path
+                  d={autoGraph.framePath}
+                  fill="none"
+                  stroke="#f472b6"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray="2 5"
+                />
+              )}
               {autoGraph.points.map((point, index) => (
                 <circle
                   key={index}
@@ -901,6 +1116,13 @@ export default function App() {
               ))}
             </svg>
 
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] font-extrabold uppercase tracking-wide">
+              <span className="text-cyan-500">Final</span>
+              <span className="text-amber-500">Disparo</span>
+              <span className="text-pink-500">Frame</span>
+              <span className="text-slate-500">Dominante: {dominantSignalLabel}</span>
+            </div>
+
             <div className="mt-2 text-[10px] font-bold">
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Escala ±{autoGraph.maxAbsError.toFixed(1)}px</span>
@@ -908,8 +1130,16 @@ export default function App() {
                   Desvio atual {autoGraph.latest ? `${autoGraph.latest.error.toFixed(1)}px` : '--'}
                 </span>
               </div>
+              <div className="mt-1 flex items-center justify-between text-slate-600">
+                <span>Disparo: {latestTriggerValue !== null ? `${latestTriggerValue.toFixed(1)}px` : '--'}</span>
+                <span>Frame: {latestFrameDriftValue !== null ? `${latestFrameDriftValue.toFixed(2)}ms` : '--'}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-slate-600">
+                <span>Media disparo: {autoGraph.avgTrigger.toFixed(1)}px</span>
+                <span>Media frame: {autoGraph.avgFrame.toFixed(2)}ms</span>
+              </div>
               <div className="mt-1 text-slate-600">
-                Inicio: {autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : '--'}
+                Inicio: {activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : '--'}
               </div>
               <div className="text-slate-600">
                 Ultimo ponto: {autoGraph.latest ? formatPreciseTimestamp(autoGraph.latest.timestamp) : '--'}
