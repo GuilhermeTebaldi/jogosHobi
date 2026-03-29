@@ -45,6 +45,7 @@ interface AutoTraceSession {
   reason: 'manual_off' | 'reset' | 'game_over';
   targetX: number;
   points: AutoTracePoint[];
+  captureMode?: boolean;
 }
 
 interface PendingAutoTelemetry {
@@ -55,6 +56,14 @@ interface PendingAutoTelemetry {
   frameDriftMs: number;
   triggerTimestamp: number;
   triggerMode: 'crossed' | 'near' | 'manual';
+}
+
+interface AutoTraceDraft {
+  startedAt: number | null;
+  targetX: number | null;
+  points: AutoTracePoint[];
+  captureMode?: boolean;
+  updatedAt?: number;
 }
 
 const BLOCK_SIZE = 60;
@@ -68,10 +77,16 @@ const COLORS = [
 ];
 const TAP_WINDOW_MS = 380;
 const AUTO_DROP_COOLDOWN_MS = 220;
+const CAPTURE_AUTO_DROP_COOLDOWN_MS = 120;
 const AUTO_TARGET_TOLERANCE = 10;
-const AUTO_TRACE_MAX_POINTS = 80;
-const AUTO_TRACE_MAX_SESSIONS = 40;
+const AUTO_TRACE_MAX_POINTS = 240;
+const AUTO_TRACE_MAX_SESSIONS = 120;
+const NORMAL_SPAWN_DELAY_MS = 800;
+const CAPTURE_SPAWN_DELAY_MS = 340;
+const CAPTURE_SWING_MULTIPLIER = 1.45;
 const AUTO_TRACE_STORAGE_KEY = 'torre_auto_trace_sessions_v1';
+const AUTO_TRACE_DRAFT_STORAGE_KEY = 'torre_auto_trace_draft_v1';
+const AUTO_CAPTURE_MODE_STORAGE_KEY = 'torre_auto_capture_mode_v1';
 
 // --- Utility Functions ---
 
@@ -109,6 +124,42 @@ const loadAutoTraceSessions = (): AutoTraceSession[] => {
   }
 };
 
+const loadAutoTraceDraft = (): AutoTraceDraft | null => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const raw = window.localStorage.getItem(AUTO_TRACE_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const points = Array.isArray(parsed.points) ? parsed.points : [];
+    const startedAt = typeof parsed.startedAt === 'number' ? parsed.startedAt : null;
+    const targetX = typeof parsed.targetX === 'number' ? parsed.targetX : null;
+    const captureMode = typeof parsed.captureMode === 'boolean' ? parsed.captureMode : undefined;
+
+    return {
+      startedAt,
+      targetX,
+      points: points.slice(-AUTO_TRACE_MAX_POINTS),
+      captureMode,
+      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : undefined,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const loadCaptureModePreference = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage.getItem(AUTO_CAPTURE_MODE_STORAGE_KEY);
+    return raw === '1';
+  } catch {
+    return false;
+  }
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gameState, setGameState] = useState<GameState>('IDLE');
@@ -129,16 +180,22 @@ export default function App() {
 
   const [lastPrecision, setLastPrecision] = useState<'PERFECT' | 'GOOD' | 'BAD' | null>(null);
   const [showTutorial, setShowTutorial] = useState(true);
+  const initialDraftRef = useRef<AutoTraceDraft | null>(loadAutoTraceDraft());
+  const initialDraft = initialDraftRef.current;
   const [autoDropEnabled, setAutoDropEnabled] = useState(false);
-  const [autoDropTargetX, setAutoDropTargetX] = useState<number | null>(null);
-  const [autoTrace, setAutoTrace] = useState<AutoTracePoint[]>([]);
-  const [autoTraceStartedAt, setAutoTraceStartedAt] = useState<number | null>(null);
+  const [autoDropTargetX, setAutoDropTargetX] = useState<number | null>(() => initialDraft?.targetX ?? null);
+  const [autoTrace, setAutoTrace] = useState<AutoTracePoint[]>(() => initialDraft?.points ?? []);
+  const [autoTraceStartedAt, setAutoTraceStartedAt] = useState<number | null>(() => initialDraft?.startedAt ?? null);
+  const [captureMode, setCaptureMode] = useState<boolean>(() => (
+    typeof initialDraft?.captureMode === 'boolean' ? initialDraft.captureMode : loadCaptureModePreference()
+  ));
   const [autoTraceSessions, setAutoTraceSessions] = useState<AutoTraceSession[]>(() => loadAutoTraceSessions());
   const [autoTraceNotice, setAutoTraceNotice] = useState<string | null>(null);
   const autoDropEnabledRef = useRef(false);
   const autoDropTargetXRef = useRef<number | null>(null);
   const autoTraceRef = useRef<AutoTracePoint[]>([]);
   const autoTraceStartedAtRef = useRef<number | null>(null);
+  const captureModeRef = useRef(false);
   const tapTimestampsRef = useRef<number[]>([]);
   const lastAutoDropTimeRef = useRef(0);
   const prevSwingXRef = useRef<number | null>(null);
@@ -151,6 +208,7 @@ export default function App() {
   useEffect(() => { autoDropTargetXRef.current = autoDropTargetX; }, [autoDropTargetX]);
   useEffect(() => { autoTraceRef.current = autoTrace; }, [autoTrace]);
   useEffect(() => { autoTraceStartedAtRef.current = autoTraceStartedAt; }, [autoTraceStartedAt]);
+  useEffect(() => { captureModeRef.current = captureMode; }, [captureMode]);
 
   const lastStoredSession = autoTraceSessions.length > 0 ? autoTraceSessions[0] : null;
   const traceForView = autoTrace.length > 0 ? autoTrace : (lastStoredSession?.points ?? []);
@@ -253,6 +311,9 @@ export default function App() {
       : autoGraph.dominantSignal === 'trigger'
         ? 'Disparo auto'
         : '--';
+  const captureModeLabel = captureMode ? 'Captura rapida' : 'Captura normal';
+  const currentAutoCooldown = captureMode ? CAPTURE_AUTO_DROP_COOLDOWN_MS : AUTO_DROP_COOLDOWN_MS;
+  const currentSpawnDelay = captureMode ? CAPTURE_SPAWN_DELAY_MS : NORMAL_SPAWN_DELAY_MS;
 
   const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
     const points = autoTraceRef.current;
@@ -271,6 +332,7 @@ export default function App() {
       reason,
       targetX,
       points,
+      captureMode: captureModeRef.current,
     };
 
     setAutoTraceSessions((prev) => [session, ...prev].slice(0, AUTO_TRACE_MAX_SESSIONS));
@@ -304,6 +366,12 @@ export default function App() {
       exportedAt: Date.now(),
       exportedAtFormatted: formatPreciseTimestamp(Date.now()),
       source: autoTrace.length > 0 ? 'active' : 'stored_session',
+      captureMode,
+      samplingProfile: {
+        maxPoints: AUTO_TRACE_MAX_POINTS,
+        autoCooldownMs: currentAutoCooldown,
+        spawnDelayMs: currentSpawnDelay,
+      },
       startedAt: activeTraceStartedAt,
       startedAtFormatted: activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : null,
       targetX: activeTraceTargetX,
@@ -318,7 +386,7 @@ export default function App() {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, downloadTextFile, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -330,6 +398,12 @@ export default function App() {
       copiedAt: Date.now(),
       copiedAtFormatted: formatPreciseTimestamp(Date.now()),
       source: autoTrace.length > 0 ? 'active' : 'stored_session',
+      captureMode,
+      samplingProfile: {
+        maxPoints: AUTO_TRACE_MAX_POINTS,
+        autoCooldownMs: currentAutoCooldown,
+        spawnDelayMs: currentSpawnDelay,
+      },
       startedAt: activeTraceStartedAt,
       startedAtFormatted: activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : null,
       targetX: activeTraceTargetX,
@@ -348,7 +422,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -476,6 +550,7 @@ export default function App() {
     ctx.fillText(`Disparo: ${latestTrigger.toFixed(1)}px`, 560, 668);
     ctx.fillText(`Frame drift: ${latestFrame.toFixed(2)}ms`, 910, 668);
     ctx.fillText(`Sinal dominante: ${autoGraph.dominantSignal ?? '--'}`, 90, 668);
+    ctx.fillText(`Modo captura: ${captureMode ? 'ON' : 'OFF'}`, 300, 668);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -485,7 +560,7 @@ export default function App() {
     link.click();
     link.remove();
     setNotice('Cartaz baixado');
-  }, [activeTraceStartedAt, autoGraph.dominantSignal, setNotice, traceForView]);
+  }, [activeTraceStartedAt, autoGraph.dominantSignal, captureMode, setNotice, traceForView]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -495,6 +570,23 @@ export default function App() {
       // Ignore storage write errors.
     }
   }, [autoTraceSessions]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const draft: AutoTraceDraft = {
+        startedAt: autoTraceStartedAt,
+        targetX: autoDropTargetX,
+        points: autoTrace.slice(-AUTO_TRACE_MAX_POINTS),
+        captureMode,
+        updatedAt: Date.now(),
+      };
+      window.localStorage.setItem(AUTO_TRACE_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      window.localStorage.setItem(AUTO_CAPTURE_MODE_STORAGE_KEY, captureMode ? '1' : '0');
+    } catch {
+      // Ignore storage write errors.
+    }
+  }, [autoDropTargetX, autoTrace, autoTraceStartedAt, captureMode]);
 
   // Game Engine Refs
   const blocksRef = useRef<Block[]>([]);
@@ -579,9 +671,10 @@ export default function App() {
     currentBlockRef.current = null;
 
     // Spawn next block
+    const spawnDelay = captureModeRef.current ? CAPTURE_SPAWN_DELAY_MS : NORMAL_SPAWN_DELAY_MS;
     setTimeout(() => {
       if (gameStateRef.current === 'PLAYING') spawnBlock();
-    }, 800);
+    }, spawnDelay);
   }, [spawnBlock]);
 
   const handleCanvasTap = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -898,7 +991,8 @@ export default function App() {
     // Draw Swinging Block
     if (currentState === 'PLAYING' && currentBlockRef.current) {
       const swingingBlock = currentBlockRef.current;
-      const speedMultiplier = 1 + Math.floor(scoreRef.current / 10) * 0.2;
+      const captureSwingBoost = captureModeRef.current ? CAPTURE_SWING_MULTIPLIER : 1;
+      const speedMultiplier = (1 + Math.floor(scoreRef.current / 10) * 0.2) * captureSwingBoost;
       swingingBlock.angle += SWING_SPEED * speedMultiplier;
       
       const swingX = Math.sin(swingingBlock.angle) * SWING_AMPLITUDE;
@@ -912,8 +1006,9 @@ export default function App() {
         const crossedTarget = prevX !== null && (prevX - targetX) * (x - targetX) <= 0;
         const nearTarget = Math.abs(x - targetX) <= AUTO_TARGET_TOLERANCE;
         const now = Date.now();
+        const autoCooldownMs = captureModeRef.current ? CAPTURE_AUTO_DROP_COOLDOWN_MS : AUTO_DROP_COOLDOWN_MS;
 
-        if ((crossedTarget || nearTarget) && now - lastAutoDropTimeRef.current > AUTO_DROP_COOLDOWN_MS) {
+        if ((crossedTarget || nearTarget) && now - lastAutoDropTimeRef.current > autoCooldownMs) {
           lastAutoDropTimeRef.current = now;
           pendingAutoTelemetryRef.current = {
             targetX,
@@ -1048,6 +1143,20 @@ export default function App() {
               Auto ligado
             </div>
           )}
+          <button
+            type="button"
+            onClick={() => setCaptureMode((prev) => !prev)}
+            className={`pointer-events-auto px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border transition-colors ${
+              captureMode
+                ? 'bg-rose-500/15 border-rose-400/40 text-rose-700 hover:bg-rose-500/25'
+                : 'bg-slate-500/10 border-slate-400/35 text-slate-700 hover:bg-slate-500/20'
+            }`}
+          >
+            {captureMode ? 'Captura ON' : 'Captura OFF'}
+          </button>
+          <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">
+            spawn {currentSpawnDelay}ms | cooldown {currentAutoCooldown}ms
+          </div>
         </div>
       </div>
 
@@ -1121,6 +1230,7 @@ export default function App() {
               <span className="text-amber-500">Disparo</span>
               <span className="text-pink-500">Frame</span>
               <span className="text-slate-500">Dominante: {dominantSignalLabel}</span>
+              <span className="text-slate-500">{captureModeLabel}</span>
             </div>
 
             <div className="mt-2 text-[10px] font-bold">
@@ -1175,7 +1285,7 @@ export default function App() {
             )}
             {lastStoredSession && (
               <p className="mt-1 text-[9px] font-semibold text-slate-500">
-                Ultima sessao salva: {formatPreciseTimestamp(lastStoredSession.endedAt)}
+                Ultima sessao salva: {formatPreciseTimestamp(lastStoredSession.endedAt)} | {lastStoredSession.captureMode ? 'captura' : 'normal'}
               </p>
             )}
           </div>
@@ -1226,6 +1336,9 @@ export default function App() {
           </button>
           <p className="text-[11px] text-slate-500 mt-4 uppercase tracking-widest">
             3 toques: auto no ponto | 2 toques: desativar auto
+          </p>
+          <p className="text-[10px] text-slate-500 mt-2 uppercase tracking-wider">
+            Captura {captureMode ? 'ON' : 'OFF'} no canto superior direito
           </p>
         </div>
       )}
