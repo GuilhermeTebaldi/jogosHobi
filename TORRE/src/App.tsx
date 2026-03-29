@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Trophy, RotateCcw, Play, AlertTriangle, MousePointer2 } from 'lucide-react';
 
@@ -23,6 +23,11 @@ interface Block {
   isSettled: boolean;
 }
 
+interface AutoTracePoint {
+  drop: number;
+  error: number;
+}
+
 const BLOCK_SIZE = 60;
 const BASE_WIDTH = 120;
 const GRAVITY = 0.4;
@@ -35,6 +40,7 @@ const COLORS = [
 const TAP_WINDOW_MS = 380;
 const AUTO_DROP_COOLDOWN_MS = 220;
 const AUTO_TARGET_TOLERANCE = 10;
+const AUTO_TRACE_MAX_POINTS = 80;
 
 // --- Utility Functions ---
 
@@ -62,6 +68,7 @@ export default function App() {
   const [showTutorial, setShowTutorial] = useState(true);
   const [autoDropEnabled, setAutoDropEnabled] = useState(false);
   const [autoDropTargetX, setAutoDropTargetX] = useState<number | null>(null);
+  const [autoTrace, setAutoTrace] = useState<AutoTracePoint[]>([]);
   const autoDropEnabledRef = useRef(false);
   const autoDropTargetXRef = useRef<number | null>(null);
   const tapTimestampsRef = useRef<number[]>([]);
@@ -69,6 +76,35 @@ export default function App() {
   const prevSwingXRef = useRef<number | null>(null);
   useEffect(() => { autoDropEnabledRef.current = autoDropEnabled; }, [autoDropEnabled]);
   useEffect(() => { autoDropTargetXRef.current = autoDropTargetX; }, [autoDropTargetX]);
+
+  const autoGraph = useMemo(() => {
+    const width = 220;
+    const height = 112;
+    const pad = 10;
+    const centerY = height / 2;
+    const maxAbsError = Math.max(12, ...autoTrace.map((point) => Math.abs(point.error)));
+
+    const points = autoTrace.map((point, index) => {
+      const ratio = autoTrace.length <= 1 ? 1 : index / (autoTrace.length - 1);
+      const x = pad + ratio * (width - pad * 2);
+      const y = centerY - (point.error / maxAbsError) * (centerY - pad);
+      return { x, y };
+    });
+
+    const path = points
+      .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ');
+
+    return {
+      width,
+      height,
+      centerY,
+      maxAbsError,
+      path,
+      points,
+      latest: autoTrace.length > 0 ? autoTrace[autoTrace.length - 1] : null,
+    };
+  }, [autoTrace]);
 
   // Game Engine Refs
   const blocksRef = useRef<Block[]>([]);
@@ -103,6 +139,7 @@ export default function App() {
     setLastPrecision(null);
     setAutoDropEnabled(false);
     setAutoDropTargetX(null);
+    setAutoTrace([]);
     tapTimestampsRef.current = [];
     lastAutoDropTimeRef.current = 0;
     prevSwingXRef.current = null;
@@ -172,6 +209,7 @@ export default function App() {
       const targetX = Math.min(Math.max(event.clientX - rect.left, 0), rect.width);
       setAutoDropEnabled(true);
       setAutoDropTargetX(targetX);
+      setAutoTrace([]);
       tapTimestampsRef.current = [];
       lastAutoDropTimeRef.current = 0;
       prevSwingXRef.current = null;
@@ -311,6 +349,15 @@ export default function App() {
               if (diff < 3) setLastPrecision('PERFECT');
               else if (diff < 15) setLastPrecision('GOOD');
               else setLastPrecision('BAD');
+
+              if (autoDropEnabledRef.current && autoDropTargetXRef.current !== null) {
+                const blockCenterX = block.x + block.width / 2;
+                const error = blockCenterX - autoDropTargetXRef.current;
+                setAutoTrace((prev) => {
+                  const next: AutoTracePoint[] = [...prev, { drop: prev.length + 1, error }];
+                  return next.slice(-AUTO_TRACE_MAX_POINTS);
+                });
+              }
 
               const currentStability = calculateStability();
               if (currentStability <= 0) {
@@ -545,6 +592,57 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {autoDropEnabled && (
+        <div className="absolute left-3 bottom-4 z-40 pointer-events-none">
+          <div className="w-[232px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700">Auto Ligado</p>
+              <p className="text-[10px] font-bold text-slate-500">
+                {autoTrace.length} blocos
+              </p>
+            </div>
+
+            <svg width={autoGraph.width} height={autoGraph.height} className="block rounded-lg bg-slate-950/90">
+              <line
+                x1="0"
+                y1={autoGraph.centerY}
+                x2={autoGraph.width}
+                y2={autoGraph.centerY}
+                stroke="rgba(255,255,255,0.25)"
+                strokeWidth="1"
+                strokeDasharray="4 4"
+              />
+              {autoGraph.path && (
+                <path
+                  d={autoGraph.path}
+                  fill="none"
+                  stroke="#67e8f9"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+              {autoGraph.points.map((point, index) => (
+                <circle
+                  key={index}
+                  cx={point.x}
+                  cy={point.y}
+                  r="1.8"
+                  fill="#22d3ee"
+                />
+              ))}
+            </svg>
+
+            <div className="mt-2 flex items-center justify-between text-[10px] font-bold">
+              <span className="text-slate-500">Escala ±{autoGraph.maxAbsError.toFixed(1)}px</span>
+              <span className="text-slate-700">
+                Desvio atual {autoGraph.latest ? `${autoGraph.latest.error.toFixed(1)}px` : '--'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Precision Feedback */}
       <AnimatePresence>
