@@ -128,10 +128,7 @@ export default function App() {
   };
 
   return (
-    <div
-      className="min-h-screen bg-black text-white font-sans selection:bg-white/20"
-      onPointerDown={handleHubSecretTap}
-    >
+    <div className="min-h-screen bg-black text-white font-sans selection:bg-white/20">
       {isGameOpen && (
         <>
           <button
@@ -302,7 +299,13 @@ export default function App() {
           <footer className="p-8 text-center md:text-left border-t border-white/5 mt-12">
             <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6 opacity-40 font-mono text-[10px] uppercase tracking-widest">
               <div className="flex gap-8">
-                <span>© 2026 GameHub</span>
+                <button
+                  type="button"
+                  onPointerDown={handleHubSecretTap}
+                  className="hover:text-white/80 transition-colors"
+                >
+                  2024 gamehub
+                </button>
                 <span className="hidden md:inline">Privacidade</span>
                 <span className="hidden md:inline">Termos</span>
               </div>
