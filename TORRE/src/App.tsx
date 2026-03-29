@@ -319,6 +319,27 @@ export default function App() {
       dominantLagCorr: 0,
       peakPeriodDrops: 0,
       peakFrequency: 0,
+      lagPathTrigger: '',
+      lagPathFrame: '',
+      lagPathLanding: '',
+      lagBestTrigger: 0,
+      lagBestFrame: 0,
+      lagBestLanding: 0,
+      lagBestTriggerCorr: 0,
+      lagBestFrameCorr: 0,
+      lagBestLandingCorr: 0,
+      phaseBars: [] as Array<{ x: number; w: number; color: string }>,
+      phaseCounts: { trigger: 0, frame: 0, landing: 0, mixed: 0 },
+      topEvents: [] as Array<{
+        drop: number;
+        timestamp: number;
+        error: number;
+        triggerError: number;
+        frameDriftMs: number;
+        landingShift: number;
+        score: number;
+        side: 'L' | 'R' | '0';
+      }>,
       origin: null as 'trigger' | 'frame' | 'landing' | null,
       originConfidence: 0,
     };
@@ -368,6 +389,38 @@ export default function App() {
       if (den < 1e-9) return 0;
       return num / den;
     };
+    const pathFromSeries = (values: number[], maxAbs: number) => values.map((value, index) => {
+      const ratio = values.length <= 1 ? 1 : index / (values.length - 1);
+      const x = pad + ratio * (width - pad * 2);
+      const y = centerY - (value / maxAbs) * (centerY - pad);
+      return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`;
+    }).join(' ');
+    const bestLagFromSeries = (values: number[]) => {
+      if (values.length === 0) return { lag: 0, corr: 0 };
+      let lag = 0;
+      let corr = values[0];
+      for (let i = 1; i < values.length; i++) {
+        if (Math.abs(values[i]) > Math.abs(corr)) {
+          lag = i;
+          corr = values[i];
+        }
+      }
+      return { lag, corr };
+    };
+    const crossCorrelationByLag = (signal: number[], driver: number[], maxLag: number) => {
+      const values: number[] = [];
+      for (let lag = 0; lag <= maxLag; lag++) {
+        const n = Math.min(signal.length - lag, driver.length);
+        if (n < 3) {
+          values.push(0);
+          continue;
+        }
+        const shiftedSignal = signal.slice(lag, lag + n);
+        const baseDriver = driver.slice(0, n);
+        values.push(correlation(shiftedSignal, baseDriver));
+      }
+      return values;
+    };
 
     const centered = errors.map((value) => value - mean(errors));
     const energy = centered.reduce((sum, value) => sum + value * value, 0);
@@ -382,12 +435,7 @@ export default function App() {
     }
 
     const maxAbsAuto = Math.max(0.18, ...autoValues.map((value) => Math.abs(value)));
-    const autoPath = autoValues.map((value, index) => {
-      const ratio = autoValues.length <= 1 ? 1 : index / (autoValues.length - 1);
-      const x = pad + ratio * (width - pad * 2);
-      const y = centerY - (value / maxAbsAuto) * (centerY - pad);
-      return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`;
-    }).join(' ');
+    const autoPath = pathFromSeries(autoValues, maxAbsAuto);
 
     let dominantLag = 0;
     let dominantLagCorr = 0;
@@ -397,6 +445,23 @@ export default function App() {
         dominantLag = lag;
       }
     }
+
+    const lagScanMax = Math.min(36, errors.length - 3);
+    const lagCorrTrigger = crossCorrelationByLag(errors, triggerErrors, lagScanMax);
+    const lagCorrFrame = crossCorrelationByLag(errors, frameDrifts, lagScanMax);
+    const lagCorrLanding = crossCorrelationByLag(errors, landingShifts, lagScanMax);
+    const lagMaxAbs = Math.max(
+      0.16,
+      ...lagCorrTrigger.map((value) => Math.abs(value)),
+      ...lagCorrFrame.map((value) => Math.abs(value)),
+      ...lagCorrLanding.map((value) => Math.abs(value)),
+    );
+    const lagPathTrigger = pathFromSeries(lagCorrTrigger, lagMaxAbs);
+    const lagPathFrame = pathFromSeries(lagCorrFrame, lagMaxAbs);
+    const lagPathLanding = pathFromSeries(lagCorrLanding, lagMaxAbs);
+    const lagBestTrigger = bestLagFromSeries(lagCorrTrigger);
+    const lagBestFrame = bestLagFromSeries(lagCorrFrame);
+    const lagBestLanding = bestLagFromSeries(lagCorrLanding);
 
     const n = centered.length;
     const binsCount = Math.min(60, Math.floor(n / 2));
@@ -450,10 +515,65 @@ export default function App() {
     const stdFrame = std(frameDrifts);
     const stdLanding = std(landingShifts);
 
+    const windowSize = 24;
+    const phaseBars: Array<{ x: number; w: number; color: string }> = [];
+    const phaseCounts = { trigger: 0, frame: 0, landing: 0, mixed: 0 };
+    for (let start = 0; start < errors.length; start += windowSize) {
+      const end = Math.min(errors.length, start + windowSize);
+      if (end - start < 6) continue;
+      const e = errors.slice(start, end);
+      const t = triggerErrors.slice(start, end);
+      const f = frameDrifts.slice(start, end);
+      const l = landingShifts.slice(start, end);
+      const ranked = [
+        { id: 'trigger' as const, value: Math.abs(correlation(e, t)) },
+        { id: 'frame' as const, value: Math.abs(correlation(e, f)) },
+        { id: 'landing' as const, value: Math.abs(correlation(e, l)) },
+      ].sort((a, b) => b.value - a.value);
+      const phase = ranked[0].value - ranked[1].value < 0.1 ? 'mixed' : ranked[0].id;
+      phaseCounts[phase] += 1;
+      const x = pad + (start / errors.length) * (width - pad * 2);
+      const w = Math.max(2, ((end - start) / errors.length) * (width - pad * 2));
+      const color = phase === 'trigger'
+        ? '#f59e0b'
+        : phase === 'frame'
+          ? '#f472b6'
+          : phase === 'landing'
+            ? '#34d399'
+            : '#94a3b8';
+      phaseBars.push({ x, w, color });
+    }
+
+    const absErrors = errors.map((value) => Math.abs(value));
+    const zDenError = Math.max(1e-6, std(absErrors));
+    const zDenFrame = Math.max(1e-6, std(frameDrifts.map((value) => Math.abs(value))));
+    const zDenLanding = Math.max(1e-6, std(landingShifts.map((value) => Math.abs(value))));
+    const topEvents = traceForView.map((point, index) => {
+      const error = errors[index];
+      const triggerError = triggerErrors[index];
+      const frameDriftMs = frameDrifts[index];
+      const landingShift = landingShifts[index];
+      const zError = Math.abs(error) / zDenError;
+      const zFrame = Math.abs(frameDriftMs) / zDenFrame;
+      const zLanding = Math.abs(landingShift) / zDenLanding;
+      const flipBonus = index > 0 && Math.sign(errors[index - 1]) !== Math.sign(error) ? 0.35 : 0;
+      const score = zError * 1.15 + zLanding * 0.85 + zFrame * 0.7 + flipBonus;
+      return {
+        drop: point.drop,
+        timestamp: point.timestamp,
+        error,
+        triggerError,
+        frameDriftMs,
+        landingShift,
+        score,
+        side: error > 0 ? 'R' as const : error < 0 ? 'L' as const : '0' as const,
+      };
+    }).sort((a, b) => b.score - a.score).slice(0, 5);
+
     const scores = [
-      { id: 'trigger' as const, score: Math.abs(corrTrigger) * 1.25 + flipRate * 0.5 },
-      { id: 'frame' as const, score: Math.abs(corrFrame) * 1.2 + (stdFrame / stdErrors) * 0.5 },
-      { id: 'landing' as const, score: Math.abs(corrLanding) * 1.05 + (stdLanding / stdErrors) * 0.45 },
+      { id: 'trigger' as const, score: Math.abs(corrTrigger) * 1.2 + Math.abs(lagBestTrigger.corr) * 0.8 + flipRate * 0.4 },
+      { id: 'frame' as const, score: Math.abs(corrFrame) * 1.1 + Math.abs(lagBestFrame.corr) * 0.9 + (stdFrame / stdErrors) * 0.45 },
+      { id: 'landing' as const, score: Math.abs(corrLanding) * 1.05 + Math.abs(lagBestLanding.corr) * 0.9 + (stdLanding / stdErrors) * 0.42 },
     ].sort((a, b) => b.score - a.score);
 
     const top = scores[0];
@@ -476,6 +596,18 @@ export default function App() {
       dominantLagCorr,
       peakPeriodDrops,
       peakFrequency,
+      lagPathTrigger,
+      lagPathFrame,
+      lagPathLanding,
+      lagBestTrigger: lagBestTrigger.lag,
+      lagBestFrame: lagBestFrame.lag,
+      lagBestLanding: lagBestLanding.lag,
+      lagBestTriggerCorr: lagBestTrigger.corr,
+      lagBestFrameCorr: lagBestFrame.corr,
+      lagBestLandingCorr: lagBestLanding.corr,
+      phaseBars,
+      phaseCounts,
+      topEvents,
       origin: top.id,
       originConfidence,
     };
@@ -580,13 +712,18 @@ export default function App() {
         dominantLagCorr: forensic.dominantLagCorr,
         dominantPeriodDrops: forensic.peakPeriodDrops,
         dominantFrequencyCyclesPerDrop: forensic.peakFrequency,
+        lagTriggerBest: { lag: forensic.lagBestTrigger, corr: forensic.lagBestTriggerCorr },
+        lagFrameBest: { lag: forensic.lagBestFrame, corr: forensic.lagBestFrameCorr },
+        lagLandingBest: { lag: forensic.lagBestLanding, corr: forensic.lagBestLandingCorr },
+        phaseCounts: forensic.phaseCounts,
+        topEvents: forensic.topEvents,
       },
       points: traceForView,
     };
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.origin, forensic.originConfidence, forensic.peakFrequency, forensic.peakPeriodDrops, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -622,6 +759,11 @@ export default function App() {
         dominantLagCorr: forensic.dominantLagCorr,
         dominantPeriodDrops: forensic.peakPeriodDrops,
         dominantFrequencyCyclesPerDrop: forensic.peakFrequency,
+        lagTriggerBest: { lag: forensic.lagBestTrigger, corr: forensic.lagBestTriggerCorr },
+        lagFrameBest: { lag: forensic.lagBestFrame, corr: forensic.lagBestFrameCorr },
+        lagLandingBest: { lag: forensic.lagBestLanding, corr: forensic.lagBestLandingCorr },
+        phaseCounts: forensic.phaseCounts,
+        topEvents: forensic.topEvents,
       },
       points: traceForView,
     };
@@ -632,7 +774,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.origin, forensic.originConfidence, forensic.peakFrequency, forensic.peakPeriodDrops, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace.length, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -764,6 +906,8 @@ export default function App() {
     ctx.fillText(`Origem provavel: ${forensicOriginLabel}`, 90, 636);
     ctx.fillText(`Corr D/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, 300, 636);
     ctx.fillText(`Periodo dominante: ${forensic.peakPeriodDrops > 0 ? `${forensic.peakPeriodDrops.toFixed(1)} drops` : '--'}`, 910, 636);
+    ctx.fillText(`Lag T/F/Q: ${forensic.lagBestTrigger}/${forensic.lagBestFrame}/${forensic.lagBestLanding}`, 300, 604);
+    ctx.fillText(`Regimes T/F/Q/M: ${forensic.phaseCounts.trigger}/${forensic.phaseCounts.frame}/${forensic.phaseCounts.landing}/${forensic.phaseCounts.mixed}`, 910, 604);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -773,7 +917,7 @@ export default function App() {
     link.click();
     link.remove();
     setNotice('Cartaz baixado');
-  }, [activeTraceStartedAt, autoGraph.dominantSignal, captureMode, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.peakPeriodDrops, forensicOriginLabel, setNotice, traceForView]);
+  }, [activeTraceStartedAt, autoGraph.dominantSignal, captureMode, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.lagBestFrame, forensic.lagBestLanding, forensic.lagBestTrigger, forensic.peakPeriodDrops, forensic.phaseCounts.frame, forensic.phaseCounts.landing, forensic.phaseCounts.mixed, forensic.phaseCounts.trigger, forensicOriginLabel, setNotice, traceForView]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1377,7 +1521,7 @@ export default function App() {
 
       {showAutoPanel && (
         <div className="absolute left-3 bottom-4 z-[80] pointer-events-none">
-          <div className="w-[268px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3 pointer-events-auto">
+          <div className="w-[268px] max-h-[72dvh] overflow-y-auto overscroll-contain rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3 pointer-events-auto">
             <div className="flex items-center justify-between mb-2">
               <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700">
                 {autoDropEnabled ? 'Auto Ligado' : autoTrace.length > 0 ? 'Ultima Captura' : 'Sessao Salva'}
@@ -1557,6 +1701,101 @@ export default function App() {
                 <span>{(forensic.flipRate * 100).toFixed(0)}%</span>
               </div>
             </div>
+
+            <div className="mt-2.5">
+              <div className="flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wide text-slate-600">
+                <span>Lag Scanner</span>
+                <span>
+                  T {forensic.lagBestTrigger}/{forensic.lagBestTriggerCorr.toFixed(2)} | F {forensic.lagBestFrame}/{forensic.lagBestFrameCorr.toFixed(2)} | Q {forensic.lagBestLanding}/{forensic.lagBestLandingCorr.toFixed(2)}
+                </span>
+              </div>
+              <svg width={forensic.width} height={forensic.height} className="mt-1 block rounded-lg bg-slate-950/90">
+                <line
+                  x1="0"
+                  y1={forensic.centerY}
+                  x2={forensic.width}
+                  y2={forensic.centerY}
+                  stroke="rgba(255,255,255,0.24)"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
+                {forensic.lagPathTrigger && (
+                  <path
+                    d={forensic.lagPathTrigger}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth="1.65"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                )}
+                {forensic.lagPathFrame && (
+                  <path
+                    d={forensic.lagPathFrame}
+                    fill="none"
+                    stroke="#f472b6"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray="4 4"
+                  />
+                )}
+                {forensic.lagPathLanding && (
+                  <path
+                    d={forensic.lagPathLanding}
+                    fill="none"
+                    stroke="#34d399"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray="2 4"
+                  />
+                )}
+              </svg>
+            </div>
+
+            <div className="mt-2.5">
+              <div className="flex items-center justify-between text-[9px] font-extrabold uppercase tracking-wide text-slate-600">
+                <span>Mapa de Regime</span>
+                <span>
+                  T {forensic.phaseCounts.trigger} | F {forensic.phaseCounts.frame} | Q {forensic.phaseCounts.landing}
+                </span>
+              </div>
+              <svg width={forensic.width} height="22" className="mt-1 block rounded-lg bg-slate-950/90">
+                <rect x="0" y="0" width={forensic.width} height="22" fill="rgba(15,23,42,0.95)" />
+                {forensic.phaseBars.map((bar, index) => (
+                  <rect
+                    key={index}
+                    x={bar.x}
+                    y="3"
+                    width={bar.w}
+                    height="16"
+                    fill={bar.color}
+                    rx="2"
+                  />
+                ))}
+              </svg>
+              <div className="mt-1 flex items-center justify-between text-[8px] font-extrabold uppercase tracking-wide text-slate-500">
+                <span className="text-amber-500">Trigger</span>
+                <span className="text-pink-500">Frame</span>
+                <span className="text-emerald-500">Queda</span>
+                <span className="text-slate-500">Misto {forensic.phaseCounts.mixed}</span>
+              </div>
+            </div>
+
+            {forensic.topEvents.length > 0 && (
+              <div className="mt-2.5 text-[8px] font-extrabold uppercase tracking-wide text-slate-600">
+                <div className="mb-1">Top Eventos</div>
+                <div className="space-y-1">
+                  {forensic.topEvents.slice(0, 3).map((event, index) => (
+                    <div key={index} className="rounded-md bg-slate-100/90 border border-slate-200 px-1.5 py-1 flex items-center justify-between">
+                      <span>#{event.drop} {event.side} {formatPreciseTimestamp(event.timestamp).split(' ')[1] ?? formatPreciseTimestamp(event.timestamp)}</span>
+                      <span>s {event.score.toFixed(2)} | e {event.error.toFixed(1)}px</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="mt-3 grid grid-cols-3 gap-1.5">
               <button
