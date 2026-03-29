@@ -26,6 +26,18 @@ interface Block {
 interface AutoTracePoint {
   drop: number;
   error: number;
+  timestamp: number;
+  blockCenterX: number;
+  targetX: number;
+}
+
+interface AutoTraceSession {
+  id: string;
+  startedAt: number;
+  endedAt: number;
+  reason: 'manual_off' | 'reset' | 'game_over';
+  targetX: number;
+  points: AutoTracePoint[];
 }
 
 const BLOCK_SIZE = 60;
@@ -41,10 +53,44 @@ const TAP_WINDOW_MS = 380;
 const AUTO_DROP_COOLDOWN_MS = 220;
 const AUTO_TARGET_TOLERANCE = 10;
 const AUTO_TRACE_MAX_POINTS = 80;
+const AUTO_TRACE_MAX_SESSIONS = 40;
+const AUTO_TRACE_STORAGE_KEY = 'torre_auto_trace_sessions_v1';
 
 // --- Utility Functions ---
 
 const getRandomColor = () => COLORS[Math.floor(Math.random() * COLORS.length)];
+
+const formatPreciseTimestamp = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const ms = String(date.getMilliseconds()).padStart(3, '0');
+  return `${date.toLocaleString('pt-BR', { hour12: false })}.${ms}`;
+};
+
+const loadAutoTraceSessions = (): AutoTraceSession[] => {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.localStorage.getItem(AUTO_TRACE_STORAGE_KEY);
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((session): session is AutoTraceSession => (
+        session &&
+        typeof session.id === 'string' &&
+        typeof session.startedAt === 'number' &&
+        typeof session.endedAt === 'number' &&
+        typeof session.reason === 'string' &&
+        typeof session.targetX === 'number' &&
+        Array.isArray(session.points)
+      ))
+      .slice(0, AUTO_TRACE_MAX_SESSIONS);
+  } catch {
+    return [];
+  }
+};
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,13 +115,20 @@ export default function App() {
   const [autoDropEnabled, setAutoDropEnabled] = useState(false);
   const [autoDropTargetX, setAutoDropTargetX] = useState<number | null>(null);
   const [autoTrace, setAutoTrace] = useState<AutoTracePoint[]>([]);
+  const [autoTraceStartedAt, setAutoTraceStartedAt] = useState<number | null>(null);
+  const [autoTraceSessions, setAutoTraceSessions] = useState<AutoTraceSession[]>(() => loadAutoTraceSessions());
+  const [autoTraceNotice, setAutoTraceNotice] = useState<string | null>(null);
   const autoDropEnabledRef = useRef(false);
   const autoDropTargetXRef = useRef<number | null>(null);
+  const autoTraceRef = useRef<AutoTracePoint[]>([]);
+  const autoTraceStartedAtRef = useRef<number | null>(null);
   const tapTimestampsRef = useRef<number[]>([]);
   const lastAutoDropTimeRef = useRef(0);
   const prevSwingXRef = useRef<number | null>(null);
   useEffect(() => { autoDropEnabledRef.current = autoDropEnabled; }, [autoDropEnabled]);
   useEffect(() => { autoDropTargetXRef.current = autoDropTargetX; }, [autoDropTargetX]);
+  useEffect(() => { autoTraceRef.current = autoTrace; }, [autoTrace]);
+  useEffect(() => { autoTraceStartedAtRef.current = autoTraceStartedAt; }, [autoTraceStartedAt]);
 
   const autoGraph = useMemo(() => {
     const width = 220;
@@ -105,6 +158,190 @@ export default function App() {
       latest: autoTrace.length > 0 ? autoTrace[autoTrace.length - 1] : null,
     };
   }, [autoTrace]);
+  const showAutoPanel = autoDropEnabled || autoTrace.length > 0;
+  const lastStoredSession = autoTraceSessions.length > 0 ? autoTraceSessions[0] : null;
+
+  const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
+    const points = autoTraceRef.current;
+    const startedAt = autoTraceStartedAtRef.current;
+    const targetX = autoDropTargetXRef.current;
+
+    if (!startedAt || !targetX || points.length === 0) {
+      setAutoTraceStartedAt(null);
+      return;
+    }
+
+    const session: AutoTraceSession = {
+      id: `${startedAt}-${Date.now()}`,
+      startedAt,
+      endedAt: Date.now(),
+      reason,
+      targetX,
+      points,
+    };
+
+    setAutoTraceSessions((prev) => [session, ...prev].slice(0, AUTO_TRACE_MAX_SESSIONS));
+    setAutoTraceStartedAt(null);
+  }, []);
+
+  const setNotice = useCallback((message: string) => {
+    setAutoTraceNotice(message);
+    window.setTimeout(() => setAutoTraceNotice((current) => (current === message ? null : current)), 2200);
+  }, []);
+
+  const downloadTextFile = useCallback((filename: string, content: string) => {
+    const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const handleDownloadJson = useCallback(() => {
+    if (autoTrace.length === 0) {
+      setNotice('Sem dados para baixar');
+      return;
+    }
+
+    const payload = {
+      exportedAt: Date.now(),
+      exportedAtFormatted: formatPreciseTimestamp(Date.now()),
+      startedAt: autoTraceStartedAt,
+      startedAtFormatted: autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : null,
+      targetX: autoDropTargetX,
+      points: autoTrace,
+    };
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
+    setNotice('JSON baixado');
+  }, [autoTrace, autoTraceStartedAt, autoDropTargetX, downloadTextFile, setNotice]);
+
+  const handleCopyJson = useCallback(async () => {
+    if (autoTrace.length === 0) {
+      setNotice('Sem dados para copiar');
+      return;
+    }
+
+    const payload = {
+      copiedAt: Date.now(),
+      copiedAtFormatted: formatPreciseTimestamp(Date.now()),
+      startedAt: autoTraceStartedAt,
+      startedAtFormatted: autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : null,
+      targetX: autoDropTargetX,
+      points: autoTrace,
+    };
+
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      setNotice('Dados copiados');
+    } catch {
+      setNotice('Falha ao copiar');
+    }
+  }, [autoTrace, autoTraceStartedAt, autoDropTargetX, setNotice]);
+
+  const handleDownloadPoster = useCallback(() => {
+    if (autoTrace.length < 2) {
+      setNotice('Dados insuficientes para cartaz');
+      return;
+    }
+
+    const width = 1200;
+    const height = 800;
+    const chartLeft = 90;
+    const chartTop = 170;
+    const chartWidth = 1020;
+    const chartHeight = 470;
+    const centerY = chartTop + chartHeight / 2;
+    const maxAbsError = Math.max(12, ...autoTrace.map((point) => Math.abs(point.error)));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setNotice('Falha ao gerar cartaz');
+      return;
+    }
+
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, '#0f172a');
+    gradient.addColorStop(1, '#1e293b');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '900 42px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText('TORRE - AUTO TRACE', 90, 78);
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 21px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(`Inicio: ${autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : '--'}`, 90, 116);
+    ctx.fillText(`Ultimo ponto: ${formatPreciseTimestamp(autoTrace[autoTrace.length - 1].timestamp)}`, 90, 144);
+
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(chartLeft, chartTop, chartWidth, chartHeight);
+
+    ctx.beginPath();
+    ctx.setLineDash([8, 8]);
+    ctx.moveTo(chartLeft, centerY);
+    ctx.lineTo(chartLeft + chartWidth, centerY);
+    ctx.strokeStyle = 'rgba(226, 232, 240, 0.35)';
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    autoTrace.forEach((point, index) => {
+      const ratio = autoTrace.length <= 1 ? 1 : index / (autoTrace.length - 1);
+      const x = chartLeft + ratio * chartWidth;
+      const y = centerY - (point.error / maxAbsError) * (chartHeight / 2 - 18);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = '#22d3ee';
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+
+    ctx.fillStyle = '#22d3ee';
+    autoTrace.forEach((point, index) => {
+      const ratio = autoTrace.length <= 1 ? 1 : index / (autoTrace.length - 1);
+      const x = chartLeft + ratio * chartWidth;
+      const y = centerY - (point.error / maxAbsError) * (chartHeight / 2 - 18);
+      ctx.beginPath();
+      ctx.arc(x, y, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    const latest = autoTrace[autoTrace.length - 1];
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '700 20px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(`Pontos: ${autoTrace.length}`, 90, 700);
+    ctx.fillText(`Escala: ±${maxAbsError.toFixed(1)}px`, 300, 700);
+    ctx.fillText(`Desvio atual: ${latest.error.toFixed(1)}px`, 560, 700);
+    ctx.fillText(`Alvo X: ${latest.targetX.toFixed(1)}px`, 910, 700);
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = `torre-auto-cartaz-${stamp}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setNotice('Cartaz baixado');
+  }, [autoTrace, autoTraceStartedAt, setNotice]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(AUTO_TRACE_STORAGE_KEY, JSON.stringify(autoTraceSessions));
+    } catch {
+      // Ignore storage write errors.
+    }
+  }, [autoTraceSessions]);
 
   // Game Engine Refs
   const blocksRef = useRef<Block[]>([]);
@@ -129,6 +366,7 @@ export default function App() {
   }, []);
 
   const initGame = useCallback(() => {
+    finalizeAutoTraceSession('reset');
     blocksRef.current = [];
     cameraYRef.current = 0;
     targetCameraYRef.current = 0;
@@ -140,6 +378,8 @@ export default function App() {
     setAutoDropEnabled(false);
     setAutoDropTargetX(null);
     setAutoTrace([]);
+    autoTraceRef.current = [];
+    setAutoTraceStartedAt(null);
     tapTimestampsRef.current = [];
     lastAutoDropTimeRef.current = 0;
     prevSwingXRef.current = null;
@@ -147,7 +387,7 @@ export default function App() {
     setGameState('PLAYING');
     setShowTutorial(true);
     spawnBlock();
-  }, [spawnBlock]);
+  }, [finalizeAutoTraceSession, spawnBlock]);
 
   const dropBlock = useCallback(() => {
     if (gameStateRef.current !== 'PLAYING' || !currentBlockRef.current) return;
@@ -196,8 +436,10 @@ export default function App() {
 
     if (autoDropEnabledRef.current) {
       if (tapTimestampsRef.current.length >= 2) {
+        finalizeAutoTraceSession('manual_off');
         setAutoDropEnabled(false);
         setAutoDropTargetX(null);
+        setAutoTraceStartedAt(null);
         tapTimestampsRef.current = [];
         prevSwingXRef.current = null;
       }
@@ -210,6 +452,8 @@ export default function App() {
       setAutoDropEnabled(true);
       setAutoDropTargetX(targetX);
       setAutoTrace([]);
+      autoTraceRef.current = [];
+      setAutoTraceStartedAt(now);
       tapTimestampsRef.current = [];
       lastAutoDropTimeRef.current = 0;
       prevSwingXRef.current = null;
@@ -217,7 +461,16 @@ export default function App() {
     }
 
     dropBlock();
-  }, [dropBlock]);
+  }, [dropBlock, finalizeAutoTraceSession]);
+
+  useEffect(() => {
+    if (gameState === 'GAME_OVER' && autoDropEnabledRef.current) {
+      finalizeAutoTraceSession('game_over');
+      setAutoDropEnabled(false);
+      setAutoDropTargetX(null);
+      setAutoTraceStartedAt(null);
+    }
+  }, [gameState, finalizeAutoTraceSession]);
 
   const calculateStability = useCallback(() => {
     if (blocksRef.current.length === 0) return 100;
@@ -352,9 +605,21 @@ export default function App() {
 
               if (autoDropEnabledRef.current && autoDropTargetXRef.current !== null) {
                 const blockCenterX = block.x + block.width / 2;
-                const error = blockCenterX - autoDropTargetXRef.current;
+                const targetX = autoDropTargetXRef.current;
+                const error = blockCenterX - targetX;
+                const timestamp = Date.now();
                 setAutoTrace((prev) => {
-                  const next: AutoTracePoint[] = [...prev, { drop: prev.length + 1, error }];
+                  const next: AutoTracePoint[] = [
+                    ...prev,
+                    {
+                      drop: prev.length + 1,
+                      error,
+                      timestamp,
+                      blockCenterX,
+                      targetX,
+                    },
+                  ];
+                  autoTraceRef.current = next.slice(-AUTO_TRACE_MAX_POINTS);
                   return next.slice(-AUTO_TRACE_MAX_POINTS);
                 });
               }
@@ -593,11 +858,13 @@ export default function App() {
         </div>
       </div>
 
-      {autoDropEnabled && (
+      {showAutoPanel && (
         <div className="absolute left-3 bottom-4 z-40 pointer-events-none">
-          <div className="w-[232px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3">
+          <div className="w-[250px] rounded-2xl border border-indigo-300/50 bg-white/88 backdrop-blur-md shadow-xl p-3 pointer-events-auto">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700">Auto Ligado</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700">
+                {autoDropEnabled ? 'Auto Ligado' : 'Ultima Captura'}
+              </p>
               <p className="text-[10px] font-bold text-slate-500">
                 {autoTrace.length} blocos
               </p>
@@ -634,12 +901,53 @@ export default function App() {
               ))}
             </svg>
 
-            <div className="mt-2 flex items-center justify-between text-[10px] font-bold">
-              <span className="text-slate-500">Escala ±{autoGraph.maxAbsError.toFixed(1)}px</span>
-              <span className="text-slate-700">
-                Desvio atual {autoGraph.latest ? `${autoGraph.latest.error.toFixed(1)}px` : '--'}
-              </span>
+            <div className="mt-2 text-[10px] font-bold">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Escala ±{autoGraph.maxAbsError.toFixed(1)}px</span>
+                <span className="text-slate-700">
+                  Desvio atual {autoGraph.latest ? `${autoGraph.latest.error.toFixed(1)}px` : '--'}
+                </span>
+              </div>
+              <div className="mt-1 text-slate-600">
+                Inicio: {autoTraceStartedAt ? formatPreciseTimestamp(autoTraceStartedAt) : '--'}
+              </div>
+              <div className="text-slate-600">
+                Ultimo ponto: {autoGraph.latest ? formatPreciseTimestamp(autoGraph.latest.timestamp) : '--'}
+              </div>
             </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={handleCopyJson}
+                className="py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-700 border border-indigo-200 hover:bg-indigo-200 transition-colors"
+              >
+                Copiar
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadJson}
+                className="py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider bg-cyan-100 text-cyan-700 border border-cyan-200 hover:bg-cyan-200 transition-colors"
+              >
+                JSON
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadPoster}
+                className="py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 hover:bg-emerald-200 transition-colors"
+              >
+                Cartaz
+              </button>
+            </div>
+
+            {autoTraceNotice && (
+              <p className="mt-2 text-[10px] font-bold text-indigo-700">{autoTraceNotice}</p>
+            )}
+            {lastStoredSession && (
+              <p className="mt-1 text-[9px] font-semibold text-slate-500">
+                Ultima sessao salva: {formatPreciseTimestamp(lastStoredSession.endedAt)}
+              </p>
+            )}
           </div>
         </div>
       )}
