@@ -159,6 +159,26 @@ const loadCaptureModePreference = (): boolean => {
   }
 };
 
+const clampNumber = (value: number, min: number, max: number): number => (
+  Math.min(max, Math.max(min, value))
+);
+
+const erfApprox = (x: number): number => {
+  const sign = x < 0 ? -1 : 1;
+  const absX = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * absX);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-absX * absX);
+  return sign * y;
+};
+
+const normalCdf = (x: number): number => 0.5 * (1 + erfApprox(x / Math.SQRT2));
+
+const chiSquareSurvivalApprox = (x: number, k: number): number => {
+  if (!(x > 0) || k <= 0) return 1;
+  const z = (Math.pow(x / k, 1 / 3) - (1 - 2 / (9 * k))) / Math.sqrt(2 / (9 * k));
+  return clampNumber(1 - normalCdf(z), 0, 1);
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gameState, setGameState] = useState<GameState>('IDLE');
@@ -337,6 +357,8 @@ export default function App() {
       phaseBars: [] as Array<{ x: number; w: number; color: string }>,
       phaseSegments: [] as Array<{ startRatio: number; endRatio: number; phase: 'trigger' | 'frame' | 'landing' | 'mixed' }>,
       phaseCounts: { trigger: 0, frame: 0, landing: 0, mixed: 0 },
+      phaseSwitches: 0,
+      originSupportRatio: 0,
       topEvents: [] as Array<{
         drop: number;
         timestamp: number;
@@ -349,6 +371,12 @@ export default function App() {
       }>,
       origin: null as 'trigger' | 'frame' | 'landing' | null,
       originConfidence: 0,
+      scoreTrigger: 0,
+      scoreFrame: 0,
+      scoreLanding: 0,
+      ljungBoxQ: 0,
+      ljungBoxP: 1,
+      ljungBoxLags: 0,
     };
 
     if (traceForView.length < 4) {
@@ -429,7 +457,26 @@ export default function App() {
       return values;
     };
 
-    const centered = errors.map((value) => value - mean(errors));
+    const detrendLinear = (values: number[]) => {
+      if (values.length < 2) {
+        return values.slice();
+      }
+      const meanX = (values.length - 1) / 2;
+      const meanY = mean(values);
+      let covXY = 0;
+      let varX = 0;
+      for (let i = 0; i < values.length; i++) {
+        const dx = i - meanX;
+        covXY += dx * (values[i] - meanY);
+        varX += dx * dx;
+      }
+      const slope = varX > 1e-9 ? covXY / varX : 0;
+      const intercept = meanY - slope * meanX;
+      return values.map((value, index) => value - (intercept + slope * index));
+    };
+
+    const detrended = detrendLinear(errors);
+    const centered = detrended.map((value) => value - mean(detrended));
     const energy = centered.reduce((sum, value) => sum + value * value, 0);
     const maxLag = Math.min(48, errors.length - 1);
     const autoValues = [1];
@@ -452,6 +499,15 @@ export default function App() {
         dominantLag = lag;
       }
     }
+
+    const ljungBoxLags = Math.max(1, Math.min(20, Math.floor(errors.length / 4), autoValues.length - 1));
+    let ljungBoxQ = 0;
+    for (let lag = 1; lag <= ljungBoxLags; lag++) {
+      const rho = autoValues[lag] ?? 0;
+      ljungBoxQ += (rho * rho) / Math.max(1, errors.length - lag);
+    }
+    ljungBoxQ *= errors.length * (errors.length + 2);
+    const ljungBoxP = chiSquareSurvivalApprox(ljungBoxQ, ljungBoxLags);
 
     const lagScanMax = Math.min(36, errors.length - 3);
     const lagCorrTrigger = crossCorrelationByLag(errors, triggerErrors, lagScanMax);
@@ -554,6 +610,12 @@ export default function App() {
       phaseBars.push({ x, w, color });
       phaseSegments.push({ startRatio, endRatio, phase });
     }
+    let phaseSwitches = 0;
+    for (let i = 1; i < phaseSegments.length; i++) {
+      if (phaseSegments[i].phase !== phaseSegments[i - 1].phase) {
+        phaseSwitches += 1;
+      }
+    }
 
     const absErrors = errors.map((value) => Math.abs(value));
     const zDenError = Math.max(1e-6, std(absErrors));
@@ -590,6 +652,16 @@ export default function App() {
     const top = scores[0];
     const second = scores[1];
     const originConfidence = Math.max(0, Math.min(1, top.score - second.score));
+    const totalScore = Math.max(1e-9, scores.reduce((sum, item) => sum + item.score, 0));
+    const scoreById = {
+      trigger: (scores.find((item) => item.id === 'trigger')?.score ?? 0) / totalScore,
+      frame: (scores.find((item) => item.id === 'frame')?.score ?? 0) / totalScore,
+      landing: (scores.find((item) => item.id === 'landing')?.score ?? 0) / totalScore,
+    };
+    const phaseWindowsCount = phaseCounts.trigger + phaseCounts.frame + phaseCounts.landing + phaseCounts.mixed;
+    const originSupportRatio = phaseWindowsCount > 0 && top
+      ? phaseCounts[top.id] / phaseWindowsCount
+      : 0;
 
     return {
       width,
@@ -624,9 +696,17 @@ export default function App() {
       phaseBars,
       phaseSegments,
       phaseCounts,
+      phaseSwitches,
+      originSupportRatio,
       topEvents,
       origin: top.id,
       originConfidence,
+      scoreTrigger: scoreById.trigger,
+      scoreFrame: scoreById.frame,
+      scoreLanding: scoreById.landing,
+      ljungBoxQ,
+      ljungBoxP,
+      ljungBoxLags,
     };
   }, [traceForView]);
   const showAutoPanel = autoDropEnabled || traceForView.length > 0;
@@ -654,6 +734,15 @@ export default function App() {
         ? 'Disparo/limiar'
         : '--';
   const maxSpectrumValue = Math.max(1e-9, ...forensic.spectrumValues);
+  const forensicScorePct = (forensic.originConfidence * 100).toFixed(0);
+  const forensicLjungPLabel = forensic.ljungBoxP < 0.001
+    ? forensic.ljungBoxP.toExponential(1)
+    : forensic.ljungBoxP.toFixed(3);
+  const forensicTemporalLabel = forensic.ljungBoxP < 0.01
+    ? 'forte'
+    : forensic.ljungBoxP < 0.05
+      ? 'moderada'
+      : 'fraca';
 
   const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
     const points = autoTraceRef.current;
@@ -721,7 +810,13 @@ export default function App() {
         avgLandingShiftPx: autoGraph.avgLanding,
         avgFrameDriftMs: autoGraph.avgFrame,
         forensicOrigin: forensic.origin,
-        forensicOriginConfidence: forensic.originConfidence,
+        heuristicScore: forensic.originConfidence,
+        heuristicBreakdown: {
+          trigger: forensic.scoreTrigger,
+          frame: forensic.scoreFrame,
+          landing: forensic.scoreLanding,
+        },
+        originSupportRatio: forensic.originSupportRatio,
         corrErrorTrigger: forensic.corrTrigger,
         corrErrorFrame: forensic.corrFrame,
         corrErrorLanding: forensic.corrLanding,
@@ -734,6 +829,12 @@ export default function App() {
         lagFrameBest: { lag: forensic.lagBestFrame, corr: forensic.lagBestFrameCorr },
         lagLandingBest: { lag: forensic.lagBestLanding, corr: forensic.lagBestLandingCorr },
         phaseCounts: forensic.phaseCounts,
+        phaseSwitches: forensic.phaseSwitches,
+        ljungBox: {
+          q: forensic.ljungBoxQ,
+          p: forensic.ljungBoxP,
+          lags: forensic.ljungBoxLags,
+        },
         topEvents: forensic.topEvents,
       },
       fullHistory: {
@@ -747,7 +848,7 @@ export default function App() {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -774,7 +875,13 @@ export default function App() {
         avgLandingShiftPx: autoGraph.avgLanding,
         avgFrameDriftMs: autoGraph.avgFrame,
         forensicOrigin: forensic.origin,
-        forensicOriginConfidence: forensic.originConfidence,
+        heuristicScore: forensic.originConfidence,
+        heuristicBreakdown: {
+          trigger: forensic.scoreTrigger,
+          frame: forensic.scoreFrame,
+          landing: forensic.scoreLanding,
+        },
+        originSupportRatio: forensic.originSupportRatio,
         corrErrorTrigger: forensic.corrTrigger,
         corrErrorFrame: forensic.corrFrame,
         corrErrorLanding: forensic.corrLanding,
@@ -787,6 +894,12 @@ export default function App() {
         lagFrameBest: { lag: forensic.lagBestFrame, corr: forensic.lagBestFrameCorr },
         lagLandingBest: { lag: forensic.lagBestLanding, corr: forensic.lagBestLandingCorr },
         phaseCounts: forensic.phaseCounts,
+        phaseSwitches: forensic.phaseSwitches,
+        ljungBox: {
+          q: forensic.ljungBoxQ,
+          p: forensic.ljungBoxP,
+          lags: forensic.ljungBoxLags,
+        },
         topEvents: forensic.topEvents,
       },
       fullHistory: {
@@ -804,7 +917,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.origin, forensic.originConfidence, forensic.phaseCounts, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -986,9 +1099,10 @@ export default function App() {
     });
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '700 16px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.fillText(`Origem provavel: ${forensicOriginLabel} (${(forensic.originConfidence * 100).toFixed(0)}%)`, regimeArea.x, regimeArea.y + 104);
+    ctx.fillText(`Hipotese origem: ${forensicOriginLabel} | score ${(forensic.originConfidence * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 104);
     ctx.fillText(`Corr E/D/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, regimeArea.x, regimeArea.y + 132);
-    ctx.fillText(`Troca de lado: ${(forensic.flipRate * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 160);
+    ctx.fillText(`Troca de lado: ${(forensic.flipRate * 100).toFixed(0)}% | trocas de regime: ${forensic.phaseSwitches}`, regimeArea.x, regimeArea.y + 160);
+    ctx.fillText(`Ljung-Box p=${forensicLjungPLabel} (lag ${forensic.ljungBoxLags}) | suporte janela ${(forensic.originSupportRatio * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 188);
 
     const eventsArea = drawCard(1132, 1372, 598, 330, 'Top Eventos', 'Picos mais fortes');
     ctx.fillStyle = '#cbd5e1';
@@ -1020,6 +1134,9 @@ export default function App() {
     ctx.fillText(`Média queda: ${autoGraph.avgLanding.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 122);
     ctx.fillText(`Média frame: ${autoGraph.avgFrame.toFixed(3)}ms`, summaryArea.x + 760, summaryArea.y + 122);
     ctx.fillText(`Lag dom: ${forensic.dominantLag} / ${forensic.dominantLagCorr.toFixed(2)}`, summaryArea.x + 1160, summaryArea.y + 122);
+    ctx.fillText(`Estrutura temporal: ${forensicTemporalLabel} | p ${forensicLjungPLabel}`, summaryArea.x, summaryArea.y + 166);
+    ctx.fillText(`Score T/F/Q: ${(forensic.scoreTrigger * 100).toFixed(0)}% / ${(forensic.scoreFrame * 100).toFixed(0)}% / ${(forensic.scoreLanding * 100).toFixed(0)}%`, summaryArea.x + 500, summaryArea.y + 166);
+    ctx.fillText(`Suporte por janela: ${(forensic.originSupportRatio * 100).toFixed(0)}%`, summaryArea.x + 1160, summaryArea.y + 166);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -1789,12 +1906,20 @@ export default function App() {
 
             <div className="mt-2 text-[9px] font-extrabold uppercase tracking-wide text-slate-600 space-y-1">
               <div className="flex items-center justify-between">
-                <span>Origem provavel</span>
+                <span>Hipotese origem</span>
                 <span>{forensicOriginLabel}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span>Confianca</span>
-                <span>{(forensic.originConfidence * 100).toFixed(0)}%</span>
+                <span>Score heuristico</span>
+                <span>{forensicScorePct}%</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Estrutura temporal</span>
+                <span>{forensicTemporalLabel}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Ljung-box p</span>
+                <span>{forensicLjungPLabel}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Corr erro/disparo</span>
@@ -1811,6 +1936,18 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <span>Troca de lado</span>
                 <span>{(forensic.flipRate * 100).toFixed(0)}%</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Suporte janela</span>
+                <span>{(forensic.originSupportRatio * 100).toFixed(0)}%</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Troca de regime</span>
+                <span>{forensic.phaseSwitches}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Score T/F/Q</span>
+                <span>{(forensic.scoreTrigger * 100).toFixed(0)} / {(forensic.scoreFrame * 100).toFixed(0)} / {(forensic.scoreLanding * 100).toFixed(0)}</span>
               </div>
             </div>
 
@@ -1995,7 +2132,7 @@ export default function App() {
                     LAB AO VIVO - SINAL
                   </h3>
                   <p className={`text-xs sm:text-sm font-bold ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
-                    Origem provável: {forensicOriginLabel} | Confiança {(forensic.originConfidence * 100).toFixed(0)}% | Pontos {traceForView.length}
+                    Hipotese origem: {forensicOriginLabel} | Score heuristico {forensicScorePct}% | Estrutura {forensicTemporalLabel} | Pontos {traceForView.length}
                   </p>
                 </div>
                 <div className={`text-[10px] font-black uppercase tracking-widest ${liveLabGlassMode ? 'text-white/75' : 'text-slate-400'}`}>
@@ -2107,6 +2244,18 @@ export default function App() {
                     <span>F {forensic.phaseCounts.frame}</span>
                     <span>Q {forensic.phaseCounts.landing}</span>
                     <span>M {forensic.phaseCounts.mixed}</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Suporte janela</span>
+                    <span>{(forensic.originSupportRatio * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Troca regime</span>
+                    <span>{forensic.phaseSwitches}</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Ljung-box p</span>
+                    <span>{forensicLjungPLabel}</span>
                   </div>
                 </div>
 
