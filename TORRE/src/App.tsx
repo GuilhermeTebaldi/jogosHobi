@@ -29,12 +29,20 @@ interface AutoTracePoint {
   timestamp: number;
   blockCenterX: number;
   targetX: number;
+  triggerX?: number;
+  releaseX?: number;
   triggerError?: number;
+  releaseError?: number;
+  stageReadToRelease?: number;
+  stageReleaseToLanding?: number;
   landingShift?: number;
   frameDeltaMs?: number;
   frameBaselineMs?: number;
   frameDriftMs?: number;
   triggerTimestamp?: number;
+  releaseTimestamp?: number;
+  commandLagMs?: number;
+  flightLagMs?: number;
   triggerMode?: 'crossed' | 'near' | 'manual';
 }
 
@@ -50,11 +58,19 @@ interface AutoTraceSession {
 
 interface PendingAutoTelemetry {
   targetX: number;
+  triggerX: number;
   triggerError: number;
+  releaseX?: number;
+  releaseError?: number;
+  stageReadToRelease?: number;
+  stageReleaseToLanding?: number;
   frameDeltaMs: number;
   frameBaselineMs: number;
   frameDriftMs: number;
   triggerTimestamp: number;
+  releaseTimestamp?: number;
+  commandLagMs?: number;
+  flightLagMs?: number;
   triggerMode: 'crossed' | 'near' | 'manual';
 }
 
@@ -335,6 +351,7 @@ export default function App() {
       spectrumBars: [] as Array<{ x: number; y: number; h: number; w: number }>,
       spectrumValues: [] as number[],
       corrTrigger: 0,
+      corrRelease: 0,
       corrFrame: 0,
       corrLanding: 0,
       flipRate: 0,
@@ -364,6 +381,9 @@ export default function App() {
         timestamp: number;
         error: number;
         triggerError: number;
+        releaseError: number;
+        stageReadToRelease: number;
+        stageReleaseToLanding: number;
         frameDriftMs: number;
         landingShift: number;
         score: number;
@@ -374,6 +394,11 @@ export default function App() {
       scoreTrigger: 0,
       scoreFrame: 0,
       scoreLanding: 0,
+      avgReadToRelease: 0,
+      avgReleaseToLanding: 0,
+      avgCommandLagMs: 0,
+      avgFlightLagMs: 0,
+      firstDeviationStage: 'indefinido' as 'leitura-soltar' | 'soltar-assentar' | 'misto' | 'indefinido',
       ljungBoxQ: 0,
       ljungBoxP: 1,
       ljungBoxLags: 0,
@@ -387,15 +412,33 @@ export default function App() {
     const triggerErrors = traceForView.map((point) => (
       typeof point.triggerError === 'number' ? point.triggerError : point.error
     ));
+    const releaseErrors = traceForView.map((point, index) => (
+      typeof point.releaseError === 'number' ? point.releaseError : triggerErrors[index]
+    ));
     const frameDrifts = traceForView.map((point) => (
       typeof point.frameDriftMs === 'number' ? point.frameDriftMs : 0
     ));
     const landingShifts = traceForView.map((point, index) => (
       typeof point.landingShift === 'number' ? point.landingShift : errors[index] - triggerErrors[index]
     ));
+    const stageReadToReleaseSeries = traceForView.map((point, index) => (
+      typeof point.stageReadToRelease === 'number' ? point.stageReadToRelease : releaseErrors[index] - triggerErrors[index]
+    ));
+    const stageReleaseToLandingSeries = traceForView.map((point, index) => (
+      typeof point.stageReleaseToLanding === 'number' ? point.stageReleaseToLanding : errors[index] - releaseErrors[index]
+    ));
+    const commandLagSeries = traceForView
+      .map((point) => point.commandLagMs)
+      .filter((value): value is number => typeof value === 'number');
+    const flightLagSeries = traceForView
+      .map((point) => point.flightLagMs)
+      .filter((value): value is number => typeof value === 'number');
 
     const mean = (values: number[]) => (
       values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+    );
+    const meanAbs = (values: number[]) => (
+      values.length > 0 ? values.reduce((sum, value) => sum + Math.abs(value), 0) / values.length : 0
     );
     const std = (values: number[]) => {
       if (values.length < 2) return 0;
@@ -572,11 +615,23 @@ export default function App() {
     const flipRate = signTransitions > 0 ? signFlips / signTransitions : 0;
 
     const corrTrigger = correlation(errors, triggerErrors);
+    const corrRelease = correlation(errors, releaseErrors);
     const corrFrame = correlation(errors, frameDrifts);
     const corrLanding = correlation(errors, landingShifts);
     const stdErrors = Math.max(1e-6, std(errors));
     const stdFrame = std(frameDrifts);
     const stdLanding = std(landingShifts);
+    const avgReadToRelease = meanAbs(stageReadToReleaseSeries);
+    const avgReleaseToLanding = meanAbs(stageReleaseToLandingSeries);
+    const avgCommandLagMs = mean(commandLagSeries);
+    const avgFlightLagMs = mean(flightLagSeries);
+    const stageDelta = Math.abs(avgReadToRelease - avgReleaseToLanding);
+    const maxStage = Math.max(avgReadToRelease, avgReleaseToLanding, 1e-6);
+    const firstDeviationStage: 'leitura-soltar' | 'soltar-assentar' | 'misto' = stageDelta / maxStage < 0.14
+      ? 'misto'
+      : avgReadToRelease > avgReleaseToLanding
+        ? 'leitura-soltar'
+        : 'soltar-assentar';
 
     const windowSize = 24;
     const phaseBars: Array<{ x: number; w: number; color: string }> = [];
@@ -624,6 +679,9 @@ export default function App() {
     const topEvents = traceForView.map((point, index) => {
       const error = errors[index];
       const triggerError = triggerErrors[index];
+      const releaseError = releaseErrors[index];
+      const stageReadToRelease = stageReadToReleaseSeries[index];
+      const stageReleaseToLanding = stageReleaseToLandingSeries[index];
       const frameDriftMs = frameDrifts[index];
       const landingShift = landingShifts[index];
       const zError = Math.abs(error) / zDenError;
@@ -636,6 +694,9 @@ export default function App() {
         timestamp: point.timestamp,
         error,
         triggerError,
+        releaseError,
+        stageReadToRelease,
+        stageReleaseToLanding,
         frameDriftMs,
         landingShift,
         score,
@@ -674,6 +735,7 @@ export default function App() {
       spectrumBars,
       spectrumValues: bins.map((bin) => bin.amp),
       corrTrigger,
+      corrRelease,
       corrFrame,
       corrLanding,
       flipRate,
@@ -704,6 +766,11 @@ export default function App() {
       scoreTrigger: scoreById.trigger,
       scoreFrame: scoreById.frame,
       scoreLanding: scoreById.landing,
+      avgReadToRelease,
+      avgReleaseToLanding,
+      avgCommandLagMs,
+      avgFlightLagMs,
+      firstDeviationStage,
       ljungBoxQ,
       ljungBoxP,
       ljungBoxLags,
@@ -743,6 +810,13 @@ export default function App() {
     : forensic.ljungBoxP < 0.05
       ? 'moderada'
       : 'fraca';
+  const firstDeviationStageLabel = forensic.firstDeviationStage === 'leitura-soltar'
+    ? 'leitura->soltar'
+    : forensic.firstDeviationStage === 'soltar-assentar'
+      ? 'soltar->assentar'
+      : forensic.firstDeviationStage === 'misto'
+        ? 'misto'
+        : '--';
 
   const finalizeAutoTraceSession = useCallback((reason: AutoTraceSession['reason']) => {
     const points = autoTraceRef.current;
@@ -809,6 +883,11 @@ export default function App() {
         avgTriggerPx: autoGraph.avgTrigger,
         avgLandingShiftPx: autoGraph.avgLanding,
         avgFrameDriftMs: autoGraph.avgFrame,
+        avgReadToReleasePx: forensic.avgReadToRelease,
+        avgReleaseToLandingPx: forensic.avgReleaseToLanding,
+        avgCommandLagMs: forensic.avgCommandLagMs,
+        avgFlightLagMs: forensic.avgFlightLagMs,
+        firstDeviationStage: forensic.firstDeviationStage,
         forensicOrigin: forensic.origin,
         heuristicScore: forensic.originConfidence,
         heuristicBreakdown: {
@@ -818,6 +897,7 @@ export default function App() {
         },
         originSupportRatio: forensic.originSupportRatio,
         corrErrorTrigger: forensic.corrTrigger,
+        corrErrorRelease: forensic.corrRelease,
         corrErrorFrame: forensic.corrFrame,
         corrErrorLanding: forensic.corrLanding,
         signFlipRate: forensic.flipRate,
@@ -848,7 +928,7 @@ export default function App() {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadTextFile(`torre-auto-trace-${stamp}.json`, JSON.stringify(payload, null, 2));
     setNotice('JSON baixado');
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, downloadTextFile, forensic.avgCommandLagMs, forensic.avgFlightLagMs, forensic.avgReadToRelease, forensic.avgReleaseToLanding, forensic.corrFrame, forensic.corrLanding, forensic.corrRelease, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.firstDeviationStage, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
 
   const handleCopyJson = useCallback(async () => {
     if (traceForView.length === 0) {
@@ -874,6 +954,11 @@ export default function App() {
         avgTriggerPx: autoGraph.avgTrigger,
         avgLandingShiftPx: autoGraph.avgLanding,
         avgFrameDriftMs: autoGraph.avgFrame,
+        avgReadToReleasePx: forensic.avgReadToRelease,
+        avgReleaseToLandingPx: forensic.avgReleaseToLanding,
+        avgCommandLagMs: forensic.avgCommandLagMs,
+        avgFlightLagMs: forensic.avgFlightLagMs,
+        firstDeviationStage: forensic.firstDeviationStage,
         forensicOrigin: forensic.origin,
         heuristicScore: forensic.originConfidence,
         heuristicBreakdown: {
@@ -883,6 +968,7 @@ export default function App() {
         },
         originSupportRatio: forensic.originSupportRatio,
         corrErrorTrigger: forensic.corrTrigger,
+        corrErrorRelease: forensic.corrRelease,
         corrErrorFrame: forensic.corrFrame,
         corrErrorLanding: forensic.corrLanding,
         signFlipRate: forensic.flipRate,
@@ -917,7 +1003,7 @@ export default function App() {
     } catch {
       setNotice('Falha ao copiar');
     }
-  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.corrFrame, forensic.corrLanding, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
+  }, [activeTraceStartedAt, activeTraceTargetX, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, currentAutoCooldown, currentSpawnDelay, forensic.avgCommandLagMs, forensic.avgFlightLagMs, forensic.avgReadToRelease, forensic.avgReleaseToLanding, forensic.corrFrame, forensic.corrLanding, forensic.corrRelease, forensic.corrTrigger, forensic.dominantLag, forensic.dominantLagCorr, forensic.firstDeviationStage, forensic.flipRate, forensic.lagBestFrame, forensic.lagBestFrameCorr, forensic.lagBestLanding, forensic.lagBestLandingCorr, forensic.lagBestTrigger, forensic.lagBestTriggerCorr, forensic.ljungBoxLags, forensic.ljungBoxP, forensic.ljungBoxQ, forensic.origin, forensic.originConfidence, forensic.originSupportRatio, forensic.phaseCounts, forensic.phaseSwitches, forensic.peakFrequency, forensic.peakPeriodDrops, forensic.scoreFrame, forensic.scoreLanding, forensic.scoreTrigger, forensic.topEvents, setNotice, traceForView]);
 
   const handleDownloadPoster = useCallback(() => {
     if (traceForView.length < 2) {
@@ -1100,7 +1186,7 @@ export default function App() {
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '700 16px system-ui, -apple-system, Segoe UI, sans-serif';
     ctx.fillText(`Hipotese origem: ${forensicOriginLabel} | score ${(forensic.originConfidence * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 104);
-    ctx.fillText(`Corr E/D/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, regimeArea.x, regimeArea.y + 132);
+    ctx.fillText(`Corr E/T/S/F/Q: ${forensic.corrTrigger.toFixed(2)} / ${forensic.corrRelease.toFixed(2)} / ${forensic.corrFrame.toFixed(2)} / ${forensic.corrLanding.toFixed(2)}`, regimeArea.x, regimeArea.y + 132);
     ctx.fillText(`Troca de lado: ${(forensic.flipRate * 100).toFixed(0)}% | trocas de regime: ${forensic.phaseSwitches}`, regimeArea.x, regimeArea.y + 160);
     ctx.fillText(`Ljung-Box p=${forensicLjungPLabel} (lag ${forensic.ljungBoxLags}) | suporte janela ${(forensic.originSupportRatio * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 188);
 
@@ -1137,6 +1223,10 @@ export default function App() {
     ctx.fillText(`Estrutura temporal: ${forensicTemporalLabel} | p ${forensicLjungPLabel}`, summaryArea.x, summaryArea.y + 166);
     ctx.fillText(`Score T/F/Q: ${(forensic.scoreTrigger * 100).toFixed(0)}% / ${(forensic.scoreFrame * 100).toFixed(0)}% / ${(forensic.scoreLanding * 100).toFixed(0)}%`, summaryArea.x + 500, summaryArea.y + 166);
     ctx.fillText(`Suporte por janela: ${(forensic.originSupportRatio * 100).toFixed(0)}%`, summaryArea.x + 1160, summaryArea.y + 166);
+    ctx.fillText(`Etapa inicial: ${firstDeviationStageLabel}`, summaryArea.x, summaryArea.y + 210);
+    ctx.fillText(`Leitura->soltar: ${forensic.avgReadToRelease.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 210);
+    ctx.fillText(`Soltar->assentar: ${forensic.avgReleaseToLanding.toFixed(2)}px`, summaryArea.x + 760, summaryArea.y + 210);
+    ctx.fillText(`Lag cmd/queda: ${forensic.avgCommandLagMs.toFixed(2)}ms / ${forensic.avgFlightLagMs.toFixed(1)}ms`, summaryArea.x + 1160, summaryArea.y + 210);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -1241,6 +1331,16 @@ export default function App() {
 
     const swingX = Math.sin(currentBlockRef.current.angle) * SWING_AMPLITUDE;
     const dropX = canvas.width / 2 + swingX - BLOCK_SIZE / 2;
+    const dropCenterX = dropX + BLOCK_SIZE / 2;
+    const releaseTimestamp = Date.now();
+    const pending = pendingAutoTelemetryRef.current;
+    if (pending) {
+      pending.releaseTimestamp = releaseTimestamp;
+      pending.releaseX = dropCenterX;
+      pending.releaseError = dropCenterX - pending.targetX;
+      pending.stageReadToRelease = pending.releaseError - pending.triggerError;
+      pending.commandLagMs = releaseTimestamp - pending.triggerTimestamp;
+    }
     
     // Calculate world Y based on screen Y (80) and current camera translation
     // to ensure the block starts exactly where the hook was visually.
@@ -1470,6 +1570,17 @@ export default function App() {
               const error = blockCenterX - targetX;
               const timestamp = Date.now();
               const triggerError = pending?.triggerError ?? error;
+              const releaseError = typeof pending?.releaseError === 'number' ? pending.releaseError : triggerError;
+              const stageReadToRelease = typeof pending?.stageReadToRelease === 'number'
+                ? pending.stageReadToRelease
+                : releaseError - triggerError;
+              const stageReleaseToLanding = error - releaseError;
+              const commandLagMs = typeof pending?.commandLagMs === 'number'
+                ? pending.commandLagMs
+                : undefined;
+              const flightLagMs = typeof pending?.releaseTimestamp === 'number'
+                ? timestamp - pending.releaseTimestamp
+                : undefined;
               const frameDeltaMs = pending?.frameDeltaMs ?? frameDeltaMsRef.current;
               const frameBaselineMs = pending?.frameBaselineMs ?? frameBaselineMsRef.current;
               const frameDriftMs = pending?.frameDriftMs ?? frameDriftMsRef.current;
@@ -1482,12 +1593,20 @@ export default function App() {
                     timestamp,
                     blockCenterX,
                     targetX,
+                    triggerX: pending?.triggerX,
+                    releaseX: pending?.releaseX,
                     triggerError,
+                    releaseError,
+                    stageReadToRelease,
+                    stageReleaseToLanding,
                     landingShift: error - triggerError,
                     frameDeltaMs,
                     frameBaselineMs,
                     frameDriftMs,
                     triggerTimestamp: pending?.triggerTimestamp,
+                    releaseTimestamp: pending?.releaseTimestamp,
+                    commandLagMs,
+                    flightLagMs,
                     triggerMode: pending?.triggerMode ?? 'manual',
                   },
                 ];
@@ -1600,6 +1719,7 @@ export default function App() {
           lastAutoDropTimeRef.current = now;
           pendingAutoTelemetryRef.current = {
             targetX,
+            triggerX: x,
             triggerError: x - targetX,
             frameDeltaMs: frameDeltaMsRef.current,
             frameBaselineMs: frameBaselineMsRef.current,
@@ -1926,6 +2046,10 @@ export default function App() {
                 <span>{forensic.corrTrigger.toFixed(2)}</span>
               </div>
               <div className="flex items-center justify-between">
+                <span>Corr erro/soltar</span>
+                <span>{forensic.corrRelease.toFixed(2)}</span>
+              </div>
+              <div className="flex items-center justify-between">
                 <span>Corr erro/frame</span>
                 <span>{forensic.corrFrame.toFixed(2)}</span>
               </div>
@@ -1948,6 +2072,14 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <span>Score T/F/Q</span>
                 <span>{(forensic.scoreTrigger * 100).toFixed(0)} / {(forensic.scoreFrame * 100).toFixed(0)} / {(forensic.scoreLanding * 100).toFixed(0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Etapa inicial</span>
+                <span>{firstDeviationStageLabel}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>L-S / S-A</span>
+                <span>{forensic.avgReadToRelease.toFixed(1)} / {forensic.avgReleaseToLanding.toFixed(1)} px</span>
               </div>
             </div>
 
@@ -2256,6 +2388,14 @@ export default function App() {
                   <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
                     <span>Ljung-box p</span>
                     <span>{forensicLjungPLabel}</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>Etapa inicial</span>
+                    <span>{firstDeviationStageLabel}</span>
+                  </div>
+                  <div className={`mt-1 text-[10px] font-black uppercase tracking-wide flex items-center justify-between ${liveLabGlassMode ? 'text-white/80' : 'text-slate-300'}`}>
+                    <span>L-S / S-A</span>
+                    <span>{forensic.avgReadToRelease.toFixed(1)} / {forensic.avgReleaseToLanding.toFixed(1)}px</span>
                   </div>
                 </div>
 
