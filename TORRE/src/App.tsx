@@ -1014,15 +1014,31 @@ export default function App() {
     const readTriggerError = (point: AutoTracePoint) => (
       typeof point.triggerError === 'number' ? point.triggerError : point.error
     );
+    const readReleaseError = (point: AutoTracePoint, triggerError: number) => (
+      typeof point.releaseError === 'number' ? point.releaseError : triggerError
+    );
     const readFrameDrift = (point: AutoTracePoint) => (
       typeof point.frameDriftMs === 'number' ? point.frameDriftMs : 0
     );
     const errors = traceForView.map((point) => point.error);
     const triggerErrors = traceForView.map(readTriggerError);
+    const releaseErrors = traceForView.map((point, index) => readReleaseError(point, triggerErrors[index]));
+    const stageReadToRelease = traceForView.map((point, index) => (
+      typeof point.stageReadToRelease === 'number' ? point.stageReadToRelease : releaseErrors[index] - triggerErrors[index]
+    ));
+    const stageReleaseToLanding = traceForView.map((point, index) => (
+      typeof point.stageReleaseToLanding === 'number' ? point.stageReleaseToLanding : errors[index] - releaseErrors[index]
+    ));
     const frameDrifts = traceForView.map(readFrameDrift);
     const maxAbsError = Math.max(12, ...errors.map((value) => Math.abs(value)));
     const maxAbsTrigger = Math.max(12, ...triggerErrors.map((value) => Math.abs(value)));
+    const maxAbsRelease = Math.max(12, ...releaseErrors.map((value) => Math.abs(value)));
     const maxAbsFrame = Math.max(2.5, ...frameDrifts.map((value) => Math.abs(value)));
+    const maxAbsStage = Math.max(
+      6,
+      ...stageReadToRelease.map((value) => Math.abs(value)),
+      ...stageReleaseToLanding.map((value) => Math.abs(value)),
+    );
     const maxAbsAuto = Math.max(0.18, ...forensic.autoValues.map((value) => Math.abs(value)));
     const maxAbsLag = Math.max(
       0.16,
@@ -1032,9 +1048,10 @@ export default function App() {
     );
     const maxSpectrum = Math.max(1e-9, ...forensic.spectrumValues);
 
-    const posterWidth = 1800;
-    const posterHeight = 2450;
-    const renderScale = 2;
+    const posterWidth = 2000;
+    const posterHeight = 3200;
+    const deviceRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const renderScale = Math.min(3, Math.max(2.2, deviceRatio * 1.5));
     const canvas = document.createElement('canvas');
     canvas.width = Math.floor(posterWidth * renderScale);
     canvas.height = Math.floor(posterHeight * renderScale);
@@ -1134,13 +1151,14 @@ export default function App() {
     ctx.fillText(`Inicio: ${activeTraceStartedAt ? formatPreciseTimestamp(activeTraceStartedAt) : '--'}`, 72, 118);
     ctx.fillText(`Ultimo ponto: ${formatPreciseTimestamp(traceForView[traceForView.length - 1].timestamp)}`, 72, 148);
 
-    const mainArea = drawCard(70, 176, 1660, 760, 'Sinal Principal', 'Erro final + disparo + frame');
+    const mainArea = drawCard(70, 176, 1860, 780, 'Sinal Principal', 'Erro final + trigger + soltar + frame');
     drawSeries(mainArea, errors, maxAbsError, '#22d3ee', 4.2, [], true, true);
     drawSeries(mainArea, triggerErrors, maxAbsTrigger, '#f59e0b', 2.6, [9, 6], false, false);
+    drawSeries(mainArea, releaseErrors, maxAbsRelease, '#a3e635', 2.4, [6, 4], false, false);
     drawSeries(mainArea, frameDrifts, maxAbsFrame, '#f472b6', 2.2, [3, 6], false, false);
 
-    const miniTop = 980;
-    const cardW = 530;
+    const miniTop = 995;
+    const cardW = 597;
     const gap = 34;
     const autoArea = drawCard(70, miniTop, cardW, 360, 'Autocorrelacao', `lag ${forensic.dominantLag} | r ${forensic.dominantLagCorr.toFixed(2)}`);
     drawSeries(autoArea, forensic.autoValues, maxAbsAuto, '#34d399', 2.7, [], false, true);
@@ -1167,7 +1185,7 @@ export default function App() {
     drawSeries(lagArea, forensic.lagSeriesFrame, maxAbsLag, '#f472b6', 2.1, [5, 4], false, false);
     drawSeries(lagArea, forensic.lagSeriesLanding, maxAbsLag, '#34d399', 2.1, [2, 4], false, false);
 
-    const regimeArea = drawCard(70, 1372, 1034, 330, 'Mapa de Regime', `T ${forensic.phaseCounts.trigger} | F ${forensic.phaseCounts.frame} | Q ${forensic.phaseCounts.landing} | M ${forensic.phaseCounts.mixed}`);
+    const regimeArea = drawCard(70, 1420, 1160, 360, 'Mapa de Regime', `T ${forensic.phaseCounts.trigger} | F ${forensic.phaseCounts.frame} | Q ${forensic.phaseCounts.landing} | M ${forensic.phaseCounts.mixed}`);
     ctx.fillStyle = 'rgba(30,41,59,0.9)';
     ctx.fillRect(regimeArea.x, regimeArea.y + 28, regimeArea.w, 44);
     forensic.phaseSegments.forEach((segment) => {
@@ -1190,21 +1208,29 @@ export default function App() {
     ctx.fillText(`Troca de lado: ${(forensic.flipRate * 100).toFixed(0)}% | trocas de regime: ${forensic.phaseSwitches}`, regimeArea.x, regimeArea.y + 160);
     ctx.fillText(`Ljung-Box p=${forensicLjungPLabel} (lag ${forensic.ljungBoxLags}) | suporte janela ${(forensic.originSupportRatio * 100).toFixed(0)}%`, regimeArea.x, regimeArea.y + 188);
 
-    const eventsArea = drawCard(1132, 1372, 598, 330, 'Top Eventos', 'Picos mais fortes');
+    const eventsArea = drawCard(1268, 1420, 662, 360, 'Top Eventos', 'Picos mais fortes');
     ctx.fillStyle = '#cbd5e1';
-    ctx.font = '700 15px system-ui, -apple-system, Segoe UI, sans-serif';
-    forensic.topEvents.slice(0, 5).forEach((event, index) => {
-      const y = eventsArea.y + 26 + index * 42;
+    ctx.font = '700 14px system-ui, -apple-system, Segoe UI, sans-serif';
+    forensic.topEvents.slice(0, 7).forEach((event, index) => {
+      const y = eventsArea.y + 22 + index * 34;
       ctx.fillText(
-        `#${event.drop} ${event.side} ${formatPreciseTimestamp(event.timestamp)} | score ${event.score.toFixed(2)} | erro ${event.error.toFixed(1)}px`,
+        `#${event.drop} ${event.side} ${formatPreciseTimestamp(event.timestamp)} | s ${event.score.toFixed(2)} | e ${event.error.toFixed(1)}px`,
         eventsArea.x,
         y,
       );
     });
 
-    const summaryArea = drawCard(70, 1738, 1660, 600, 'Resumo Expandido', 'Métricas e contexto de captura');
+    const pipelineArea = drawCard(70, 1820, 1860, 360, 'Pipeline do Erro', `Etapa inicial ${firstDeviationStageLabel} | L-S ${forensic.avgReadToRelease.toFixed(2)}px | S-A ${forensic.avgReleaseToLanding.toFixed(2)}px`);
+    drawSeries(pipelineArea, stageReadToRelease, maxAbsStage, '#fb7185', 2.5, [6, 4], false, true);
+    drawSeries(pipelineArea, stageReleaseToLanding, maxAbsStage, '#34d399', 2.5, [2, 5], false, false);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '700 16px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.fillText(`Corr erro/disparo ${forensic.corrTrigger.toFixed(2)} | erro/soltar ${forensic.corrRelease.toFixed(2)} | erro/frame ${forensic.corrFrame.toFixed(2)} | erro/queda ${forensic.corrLanding.toFixed(2)}`, pipelineArea.x, pipelineArea.y + pipelineArea.h - 8);
+
+    const summaryArea = drawCard(70, 2220, 1860, 930, 'Resumo Expandido', 'Métricas e contexto de captura');
     const latest = traceForView[traceForView.length - 1];
     const latestTrigger = typeof latest.triggerError === 'number' ? latest.triggerError : latest.error;
+    const latestRelease = typeof latest.releaseError === 'number' ? latest.releaseError : latestTrigger;
     const latestFrame = typeof latest.frameDriftMs === 'number' ? latest.frameDriftMs : 0;
     ctx.fillStyle = '#e2e8f0';
     ctx.font = '800 28px system-ui, -apple-system, Segoe UI, sans-serif';
@@ -1213,9 +1239,10 @@ export default function App() {
     ctx.fillText(`Alvo X: ${latest.targetX.toFixed(1)}px`, summaryArea.x + 760, summaryArea.y + 34);
     ctx.fillText(`Modo captura: ${captureMode ? 'ON' : 'OFF'}`, summaryArea.x + 1160, summaryArea.y + 34);
     ctx.fillText(`Erro final: ${latest.error.toFixed(2)}px`, summaryArea.x, summaryArea.y + 78);
-    ctx.fillText(`Disparo: ${latestTrigger.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 78);
-    ctx.fillText(`Frame drift: ${latestFrame.toFixed(3)}ms`, summaryArea.x + 760, summaryArea.y + 78);
-    ctx.fillText(`Dominante: ${autoGraph.dominantSignal ?? '--'} / ${forensicOriginLabel}`, summaryArea.x + 1160, summaryArea.y + 78);
+    ctx.fillText(`Trigger: ${latestTrigger.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 78);
+    ctx.fillText(`Soltar: ${latestRelease.toFixed(2)}px`, summaryArea.x + 760, summaryArea.y + 78);
+    ctx.fillText(`Frame drift: ${latestFrame.toFixed(3)}ms`, summaryArea.x + 1160, summaryArea.y + 78);
+    ctx.fillText(`Dominante: ${autoGraph.dominantSignal ?? '--'} / ${forensicOriginLabel}`, summaryArea.x, summaryArea.y + 342);
     ctx.fillText(`Média disparo: ${autoGraph.avgTrigger.toFixed(2)}px`, summaryArea.x, summaryArea.y + 122);
     ctx.fillText(`Média queda: ${autoGraph.avgLanding.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 122);
     ctx.fillText(`Média frame: ${autoGraph.avgFrame.toFixed(3)}ms`, summaryArea.x + 760, summaryArea.y + 122);
@@ -1227,6 +1254,11 @@ export default function App() {
     ctx.fillText(`Leitura->soltar: ${forensic.avgReadToRelease.toFixed(2)}px`, summaryArea.x + 360, summaryArea.y + 210);
     ctx.fillText(`Soltar->assentar: ${forensic.avgReleaseToLanding.toFixed(2)}px`, summaryArea.x + 760, summaryArea.y + 210);
     ctx.fillText(`Lag cmd/queda: ${forensic.avgCommandLagMs.toFixed(2)}ms / ${forensic.avgFlightLagMs.toFixed(1)}ms`, summaryArea.x + 1160, summaryArea.y + 210);
+    ctx.fillText(`Ljung-Box Q: ${forensic.ljungBoxQ.toFixed(1)} | lags: ${forensic.ljungBoxLags}`, summaryArea.x, summaryArea.y + 254);
+    ctx.fillText(`Regimes T/F/Q/M: ${forensic.phaseCounts.trigger}/${forensic.phaseCounts.frame}/${forensic.phaseCounts.landing}/${forensic.phaseCounts.mixed}`, summaryArea.x + 500, summaryArea.y + 254);
+    ctx.fillText(`Troca de lado/regime: ${(forensic.flipRate * 100).toFixed(0)}% / ${forensic.phaseSwitches}`, summaryArea.x + 1160, summaryArea.y + 254);
+    ctx.fillText(`Sessoes salvas: ${autoTraceSessions.length} | pontos totais: ${autoTrace.length + autoTraceSessions.reduce((sum, session) => sum + session.points.length, 0)}`, summaryArea.x, summaryArea.y + 298);
+    ctx.fillText(`Escalas: erro ±${maxAbsError.toFixed(1)}px | stage ±${maxAbsStage.toFixed(1)}px | frame ±${maxAbsFrame.toFixed(2)}ms`, summaryArea.x + 760, summaryArea.y + 298);
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const link = document.createElement('a');
@@ -1236,7 +1268,7 @@ export default function App() {
     link.click();
     link.remove();
     setNotice('Cartaz HQ baixado');
-  }, [activeTraceStartedAt, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, captureMode, forensic, forensicOriginLabel, setNotice, traceForView]);
+  }, [activeTraceStartedAt, autoGraph.avgFrame, autoGraph.avgLanding, autoGraph.avgTrigger, autoGraph.dominantSignal, autoTrace, autoTraceSessions, captureMode, firstDeviationStageLabel, forensic, forensicLjungPLabel, forensicOriginLabel, forensicTemporalLabel, setNotice, traceForView]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
