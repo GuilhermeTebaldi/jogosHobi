@@ -63,9 +63,7 @@ export default function App() {
   const currentBlockRef = useRef<{ x: number; y: number; color: string; angle: number } | null>(null);
   const cameraYRef = useRef(0);
   const targetCameraYRef = useRef(0);
-  const towerRotationRef = useRef(0);
   const shakeRef = useRef(0);
-  const requestRef = useRef<number>(null);
 
   const gameOverTriggeredRef = useRef(false);
 
@@ -84,7 +82,6 @@ export default function App() {
     blocksRef.current = [];
     cameraYRef.current = 0;
     targetCameraYRef.current = 0;
-    towerRotationRef.current = 0;
     gameOverTriggeredRef.current = false;
     setScore(0);
     setStability(100);
@@ -408,14 +405,19 @@ export default function App() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const viewport = window.visualViewport;
 
     const handleResize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const width = Math.floor(viewport?.width ?? window.innerWidth);
+      const height = Math.floor(viewport?.height ?? window.innerHeight);
+      canvas.width = width;
+      canvas.height = height;
     };
 
     window.addEventListener('resize', handleResize);
+    viewport?.addEventListener('resize', handleResize);
     handleResize();
+    const settleTimer = window.setTimeout(handleResize, 140);
 
     let frameId: number;
     const loop = (time: number) => {
@@ -426,6 +428,8 @@ export default function App() {
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      viewport?.removeEventListener('resize', handleResize);
+      window.clearTimeout(settleTimer);
       cancelAnimationFrame(frameId);
     };
   }, []);
@@ -433,10 +437,10 @@ export default function App() {
   // --- Render ---
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-sky-50 font-sans select-none touch-none">
+    <div className="relative w-full h-[100dvh] overflow-hidden bg-sky-50 font-sans select-none touch-manipulation">
       <canvas
         ref={canvasRef}
-        onClick={dropBlock}
+        onPointerDown={dropBlock}
         className="block w-full h-full cursor-pointer"
       />
 
