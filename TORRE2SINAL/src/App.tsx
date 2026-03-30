@@ -227,6 +227,10 @@ export default function App() {
 
   const [lastPrecision, setLastPrecision] = useState<'PERFECT' | 'GOOD' | 'BAD' | null>(null);
   const [showTutorial, setShowTutorial] = useState(true);
+  const handleBackToHub = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new Event('gamehub:back'));
+  }, []);
   const initialDraftRef = useRef<AutoTraceDraft | null>(loadAutoTraceDraft());
   const initialDraft = initialDraftRef.current;
   const [autoDropEnabled, setAutoDropEnabled] = useState(false);
@@ -1939,6 +1943,13 @@ export default function App() {
       {/* HUD */}
       <div className="absolute top-0 left-0 w-full p-4 sm:p-6 flex justify-between items-start pointer-events-none">
         <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={handleBackToHub}
+            className="pointer-events-auto w-fit px-3 py-1 rounded-full bg-white/85 border border-white/80 text-[11px] font-black uppercase tracking-wide text-slate-700 hover:bg-white transition-colors"
+          >
+            Voltar
+          </button>
           <div className="text-slate-500 text-xs font-bold uppercase tracking-widest">Blocos</div>
           <div className="text-3xl sm:text-4xl font-black text-slate-800 tabular-nums">{score}</div>
         </div>

@@ -13,6 +13,10 @@ export default function App() {
   const [currentPlayerIndex, setCurrentPlayerIndex] = useState(0);
   const [word, setWord] = useState("");
   const [impostorIndex, setImpostorIndex] = useState(-1);
+  const handleBackToHub = () => {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new Event("gamehub:back"));
+  };
 
   const startGame = () => {
     const randomWord = WORDS[Math.floor(Math.random() * WORDS.length)];
@@ -47,7 +51,16 @@ export default function App() {
 
       <header className="fixed top-0 left-0 right-0 z-30 px-4 py-4">
         <div className="mx-auto max-w-md bg-black/40 text-white border border-white/20 rounded-2xl backdrop-blur-md px-4 py-2.5 flex items-center justify-between">
-          <span className="text-[11px] font-black uppercase tracking-[0.2em]">Impostor</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleBackToHub}
+              className="px-2.5 py-1 rounded-full border border-white/35 bg-black/25 text-[11px] font-black uppercase tracking-wide hover:bg-white/15 transition-colors"
+            >
+              Voltar
+            </button>
+            <span className="text-[11px] font-black uppercase tracking-[0.2em]">Impostor</span>
+          </div>
           <span className="text-[11px] font-semibold uppercase tracking-wider text-white/80">
             {numPlayers} jogadores
           </span>

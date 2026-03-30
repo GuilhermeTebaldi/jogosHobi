@@ -19,6 +19,10 @@ export default function App() {
     history: []
   });
   const [showHistory, setShowHistory] = useState(false);
+  const handleBackToHub = () => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new Event('gamehub:back'));
+  };
 
   const startNewRound = useCallback(() => {
     setState(prev => ({
@@ -72,6 +76,13 @@ export default function App() {
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-3 flex justify-between items-center shrink-0">
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleBackToHub}
+            className="px-3 py-1 rounded-full border border-gray-200 text-[11px] font-black uppercase tracking-wide text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            Voltar
+          </button>
           <div className="w-6 h-6 rounded-lg bg-black flex items-center justify-center">
             <div className="w-3 h-3 rounded-full bg-gradient-to-tr from-red-500 via-green-500 to-blue-500" />
           </div>

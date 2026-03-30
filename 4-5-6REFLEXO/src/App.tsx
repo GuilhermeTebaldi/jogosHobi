@@ -26,6 +26,10 @@ export default function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const handleBackToHub = () => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new Event('gamehub:back'));
+  };
 
   const generateNumber = () => {
     const min = Math.pow(10, numDigits - 1);
@@ -96,20 +100,29 @@ export default function App() {
     <div className="h-[100dvh] w-screen bg-[#f0f4f8] flex flex-col font-sans text-slate-800 overflow-hidden fixed inset-0 touch-manipulation select-none">
       {/* Top Bar */}
       <header className="h-12 bg-white/80 backdrop-blur-md border-b border-slate-200 z-50 flex items-center justify-between px-6 flex-shrink-0">
-        {gameState !== 'idle' ? (
-          <button 
-            onClick={() => setGameState('idle')}
-            className="flex items-center gap-1 text-slate-600 hover:text-blue-600 transition-colors"
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleBackToHub}
+            className="px-2.5 py-1 rounded-full border border-slate-300 text-[11px] font-black uppercase tracking-wide text-slate-700 hover:bg-slate-100 transition-colors"
           >
-            <ChevronLeft size={18} />
-            <span className="text-xs font-bold uppercase tracking-wider">Voltar</span>
+            Voltar
           </button>
-        ) : (
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
-            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Menu</span>
-          </div>
-        )}
+          {gameState !== 'idle' ? (
+            <button
+              onClick={() => setGameState('idle')}
+              className="flex items-center gap-1 text-slate-600 hover:text-blue-600 transition-colors"
+            >
+              <ChevronLeft size={18} />
+              <span className="text-xs font-bold uppercase tracking-wider">Rodada</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Menu</span>
+            </div>
+          )}
+        </div>
         <button 
           onClick={() => setShowHistory(true)}
           className="flex items-center gap-2 text-slate-600 hover:text-blue-600 transition-colors"

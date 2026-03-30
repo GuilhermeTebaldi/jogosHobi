@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useMemo, useRef, useState, useEffect, type ComponentType, type ReactNode } from "react";
 import { motion } from "motion/react";
-import { TowerControl as Tower, Brain, Target, ChevronRight, ChevronLeft, User } from "lucide-react";
+import { TowerControl as Tower, Brain, Target, ChevronRight, User } from "lucide-react";
 import TorreGame from "../TORRE/src/App.tsx";
 import Torre2SinalGame from "../TORRE2SINAL/src/App.tsx";
 import ReflexoGame from "../4-5-6REFLEXO/src/App.tsx";
@@ -73,7 +73,6 @@ const SECRET_MENU_TAP_TARGET = 5;
 
 export default function App() {
   const [activeGameId, setActiveGameId] = useState<GameId | null>(null);
-  const [isGameListOpen, setIsGameListOpen] = useState(false);
   const [secretUnlocked, setSecretUnlocked] = useState(false);
   const hubTapTimesRef = useRef<number[]>([]);
 
@@ -93,8 +92,16 @@ export default function App() {
   const openGame = (gameId: GameId | null) => {
     if (gameId === "torre2sinal" && !secretUnlocked) return;
     setActiveGameId(gameId);
-    setIsGameListOpen(false);
   };
+  useEffect(() => {
+    const handleBackToHub = () => {
+      setActiveGameId(null);
+    };
+    window.addEventListener("gamehub:back", handleBackToHub);
+    return () => {
+      window.removeEventListener("gamehub:back", handleBackToHub);
+    };
+  }, []);
   const handleHubSecretTap = () => {
     if (isGameOpen || secretUnlocked) return;
     const now = Date.now();
@@ -106,70 +113,8 @@ export default function App() {
       hubTapTimesRef.current = [];
     }
   };
-  const handleMenuToggle = () => {
-    setIsGameListOpen((prev) => !prev);
-  };
-
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-white/20">
-      {isGameOpen && (
-        <>
-          <button
-            type="button"
-            onClick={handleMenuToggle}
-            className="fixed top-4 left-3 z-[120] w-10 h-10 rounded-full border border-white/20 bg-black/70 backdrop-blur-xl flex items-center justify-center"
-            aria-label="Abrir lista de jogos"
-          >
-            {isGameListOpen ? <ChevronLeft size={18} /> : <ChevronRight size={18} />}
-          </button>
-
-          <div className={`fixed inset-0 z-[110] ${isGameListOpen ? "" : "pointer-events-none"}`}>
-            <button
-              type="button"
-              onClick={() => setIsGameListOpen(false)}
-              className={`absolute inset-0 bg-black/45 transition-opacity duration-200 ${
-                isGameListOpen ? "opacity-100" : "opacity-0"
-              }`}
-              aria-label="Fechar lista de jogos"
-            />
-
-            <aside
-              className={`absolute top-0 left-0 h-full w-72 max-w-[86vw] bg-black/92 border-r border-white/15 backdrop-blur-xl p-4 pt-20 transition-transform duration-200 ${
-                isGameListOpen ? "translate-x-0" : "-translate-x-full"
-              }`}
-            >
-              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-white/60">Lista de Jogos</p>
-              {secretUnlocked && (
-                <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-emerald-300">
-                  Torre 2 Sinal liberado
-                </p>
-              )}
-              <div className="mt-4 flex flex-col gap-2">
-                <button
-                  onClick={() => openGame(null)}
-                  className="px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest border bg-white text-black border-white text-left"
-                >
-                  Voltar ao Hub
-                </button>
-                {menuGames.map((game) => (
-                  <button
-                    key={game.id}
-                    onClick={() => openGame(game.id)}
-                    className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest border text-left transition-colors ${
-                      activeGameId === game.id
-                        ? "bg-white text-black border-white"
-                        : "bg-white/5 border-white/15 hover:bg-white/10"
-                    }`}
-                  >
-                    {game.title}
-                  </button>
-                ))}
-              </div>
-            </aside>
-          </div>
-        </>
-      )}
-
       {!isGameOpen && (
         <header className="fixed top-0 left-0 w-full z-[300] px-4 py-4 md:px-6">
           <div className="max-w-7xl mx-auto rounded-2xl border border-white/10 bg-black/65 backdrop-blur-xl px-4 py-3 md:px-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -190,7 +135,7 @@ export default function App() {
               >
                 Hub
               </button>
-              {publicGames.map((game) => (
+              {menuGames.map((game) => (
                 <button
                   key={game.id}
                   onClick={() => openGame(game.id)}
@@ -221,7 +166,7 @@ export default function App() {
               </motion.h1>
               {secretUnlocked && (
                 <p className="text-emerald-300 font-mono text-[10px] uppercase tracking-widest mb-1">
-                  Torre 2 Sinal liberado (menu lateral)
+                  Torre 2 Sinal liberado
                 </p>
               )}
               <motion.p
@@ -235,7 +180,7 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-              {publicGames.map((game, index) => (
+              {menuGames.map((game, index) => (
                 <motion.button
                   key={game.id}
                   type="button"
