@@ -278,16 +278,6 @@ export default function App() {
 
       // Draw Block
       ctx.save();
-      
-      let cumulativeTilt = 0;
-      if (currentState !== 'FALLING') {
-        const centerX = canvas.width / 2;
-        for (let i = 0; i <= index; i++) {
-          const b = blocksRef.current[i];
-          const offset = (b.x + b.width / 2) - centerX;
-          cumulativeTilt += offset * 0.0001 * (i + 1);
-        }
-      }
 
       ctx.translate(block.x + block.width / 2, block.y + block.height / 2);
       
@@ -310,9 +300,8 @@ export default function App() {
         
         ctx.rotate(block.rotation);
       } else {
-         // Only wobble during active play
-         const wobble = currentState === 'PLAYING' ? Math.sin(Date.now() * 0.005) * (1 - stabilityRef.current / 100) * 0.05 : 0;
-         ctx.rotate(cumulativeTilt + wobble);
+         // Keep settled blocks perfectly aligned while building.
+         ctx.rotate(0);
       }
 
       ctx.fillStyle = block.color;
